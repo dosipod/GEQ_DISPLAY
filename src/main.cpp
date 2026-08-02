@@ -3,14 +3,18 @@
 #include <WiFiUdp.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
-#include <ElegantOTA.h>
-#include <ArduinoJson.h>
 #include <Arduino_GFX_Library.h>
+#include <Preferences.h>
+#include "config.h"
 
-// Build version definition tracker string configuration footprint
-#define FIRMWARE_VERSION "v1.2.4-BETA"
+// Forward declaration function prototypes
+void saveSettingsToFlash();
+void loadSettingsFromFlash();
 
-// Clear conflicting structural canvas color definitions
+TaskHandle_t networkTaskHandle = NULL;
+
+#include "web_handlers.h"
+
 #ifdef BLACK
 #undef BLACK
 #endif
@@ -18,274 +22,241 @@
 #undef GREEN
 #endif
 
-// Wi-Fi Access Parameters managed via your secure environmental secret bindings
-const char* ssid     = SECRET_SSID;
-const char* password = SECRET_PASS;
-
-struct DevConfig {
-  uint16_t udpPort = 11988;
-  char multicastIP[16] = "239.0.0.1";
-  uint8_t visualizerMode = 0; 
-};
+const char* ssid     = "toi";
+const char* password = "dcba@4321";
 DevConfig config;
-
-struct WledAudioPacket {
-  char header[4]; 
-  uint8_t sampleAgc;
-  uint8_t volumeSmth;
-  uint8_t volumeRaw;
-  uint8_t binData[16];
-};
 
 WiFiUDP udp;
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
-WledAudioPacket sharedPacket;
+Preferences preferences;
 portMUX_TYPE dataMutex = portMUX_INITIALIZER_UNLOCKED;
+
+uint8_t sharedVisualizerBins[16] = {0};
+uint8_t previousBins[16] = {0};
+unsigned long lastPacketTime = 0; 
+unsigned long lastRenderedPacketCount = 0;
+
+uint8_t globalNetworkPacketBuffer[512] = {0};
+
 bool newPacketAvailable = false;
+bool isTestModeActive = false;
+bool isUdpConnected = false;
+String testColorHexWeb = "#000000";
 
-// Hardware target display bus definitions matching your tested panel offsets
-Arduino_DataBus *bus = new Arduino_ESP32SPI(16, 5, 18, 19, -1);
-Arduino_GFX *gfx = new Arduino_ST7789(bus, 23, 1, true, 135, 240, 52, 40, 53, 40);
+volatile bool triggerHardwareReboot = false;
+volatile bool triggerUdpReinit = false;
 
-uint16_t peakHolds[16] = {0};
+unsigned long lastDebugPrint = 0;
+unsigned long validPacketCount = 0;
+unsigned long droppedPacketCount = 0;
 
-const char INDEX_HTML[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-  <title>TTGO Music Visualizer Terminal</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
-    .card { background: #1e1e1e; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); width: 100%; max-width: 400px; margin-bottom: 20px; }
-    h2 { margin-top: 0; color: #00e676; text-align: center; }
-    label { display: block; margin: 12px 0 4px; font-weight: bold; font-size: 14px; }
-    input, select, button { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #252525; color: #fff; box-sizing: border-box; }
-    button { background: #00e676; color: #121212; font-weight: bold; cursor: pointer; margin-top: 15px; border: none; }
-    button:hover { background: #00b55c; }
-    #canvas { width: 100%; height: 150px; background: #000; border-radius: 6px; display: block; }
-    .ota-link { display: block; text-align: center; color: #a0a0a0; text-decoration: none; margin-top: 10px; font-size: 12px; }
-    .ota-link:hover { color: #00e676; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Live Preview</h2>
-    <canvas id="canvas" width="240" height="135"></canvas>
-  </div>
-  <div class="card">
-    <h2>Control Console</h2>
-    <form id="cfgForm">
-      <label>UDP Target Port</label>
-      <input type="number" id="port" name="udpPort" min="1" max="65535">
-      <label>Multicast Target Core IP</label>
-      <input type="text" id="ip" name="multicastIP">
-      <label>Spectrum Render Effect Style</label>
-      <select id="effect" name="visualizerMode">
-        <option value="0">Classical GEQ</option>
-        <option value="1">Center-Out Mirror</option>
-        <option value="2">Rainbow Flow</option>
-      </select>
-      <button type="button" onclick="submitConfig()">Save Options</button>
-    </form>
-    <a href="/update" class="ota-link" target="_blank">Firmware Update Dashboard (OTA)</a>
-  </div>
-  <script>
-    var ws = new WebSocket('ws://' + window.location.hostname + ':81/');
-    var ctx = document.getElementById('canvas').getContext('2d');
-    
-    fetch('/get-config').then(r => r.json()).then(data => {
-      document.getElementById('port').value = data.udpPort;
-      document.getElementById('ip').value = data.multicastIP;
-      document.getElementById('effect').value = data.visualizerMode;
-    });
+Arduino_DataBus *bus = nullptr;
+Arduino_GFX *gfx = nullptr;
+uint16_t peakHolds[16] = {0}; 
 
-    ws.onmessage = function(evt) {
-      var data = JSON.parse(evt.data);
-      ctx.clearRect(0, 0, 240, 135);
-      var w = (240 / 16) - 2;
-      for(var i=0; i<16; i++) {
-        var h = (data.bins[i] / 255) * 135;
-        ctx.fillStyle = (data.mode == 2) ? 'hsl(' + (i * 22) + ', 100%, 50%)' : '#00e676';
-        ctx.fillRect(i * (w + 2), 135 - h, w, h);
-      }
-    };
-
-    function submitConfig() {
-      var payload = {
-        udpPort: parseInt(document.getElementById('port').value),
-        multicastIP: document.getElementById('ip').value,
-        visualizerMode: parseInt(document.getElementById('effect').value)
-      };
-      fetch('/save-config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-    }
-  </script>
-</body>
-</html>
-)rawliteral";
-
-void handleRoot() { server.send_P(200, "text/html", INDEX_HTML); }
-
-void handleGetConfig() {
-  StaticJsonDocument<200> doc;
-  doc["udpPort"] = config.udpPort;
-  doc["multicastIP"] = config.multicastIP;
-  doc["visualizerMode"] = config.visualizerMode;
-  String out;
-  serializeJson(doc, out);
-  server.send(200, "application/json", out);
+void loadSettingsFromFlash() {
+  preferences.begin("geq_cfg", true);
+  config.udpPort = preferences.getUShort("port", 11980);
+  String ip = preferences.getString("ip", "239.0.0.1");
+  if (ip.length() < 7 || ip == "" || ip.startsWith("0.") || ip.endsWith(".0")) { 
+    ip = "239.0.0.1"; 
+  }
+  
+  memset(config.multicastIP, 0, 16);
+  strncpy(config.multicastIP, ip.c_str(), 15);
+  
+  config.visualizerMode = preferences.getUChar("mode", 1);
+  config.displayRotation = preferences.getUChar("rot", 3);
+  config.audioFloor = preferences.getUChar("floor", 25); 
+  config.audioGain = preferences.getUChar("gain", 15);
+  preferences.end();
 }
 
-void handleSaveConfig() {
-  if (server.hasArg("plain")) {
-    StaticJsonDocument<200> doc;
-    deserializeJson(doc, server.arg("plain"));
-    
-    portENTER_CRITICAL(&dataMutex);
-    config.udpPort = doc["udpPort"];
-    strncpy(config.multicastIP, doc["multicastIP"], 16);
-    config.visualizerMode = doc["visualizerMode"];
-    portEXIT_CRITICAL(&dataMutex);
-    
-    udp.stop();
-    udp.beginMulticast(IPAddress(239, 0, 0, 1), config.udpPort);
-    server.send(200, "text/plain", "OK");
+void saveSettingsToFlash() {
+  preferences.begin("geq_cfg", false);
+  preferences.putUShort("port", config.udpPort);
+  preferences.putString("ip", String(config.multicastIP));
+  preferences.putUChar("mode", config.visualizerMode);
+  preferences.putUChar("rot", config.displayRotation);
+  preferences.putUChar("floor", config.audioFloor);
+  preferences.putUChar("gain", config.audioGain);
+  preferences.end();
+}
+
+void beginUdpMulticast() {
+  isUdpConnected = false;
+  udp.stop();
+  vTaskDelay(pdMS_TO_TICKS(150)); 
+  const char* targetIPStr = (strlen(config.multicastIP) > 6) ? config.multicastIP : "239.0.0.1";
+  uint16_t targetPort = (config.udpPort > 0) ? config.udpPort : 11980;
+  
+  IPAddress groupIP;
+  if (groupIP.fromString(targetIPStr)) { 
+    if (udp.beginMulticast(groupIP, targetPort)) {
+      Serial.printf("[NET] Listening on Multicast: %s:%d\n", targetIPStr, targetPort);
+      isUdpConnected = true;
+      lastPacketTime = millis();
+    }
   }
 }
 
-// Thread Task 0 Runtime handling all web data pipes safely
-void core0WebTask(void * pvParameters) {
-  server.on("/", handleRoot);
-  server.on("/get-config", handleGetConfig);
-  server.on("/save-config", handleSaveConfig);
-  
-  // Link and configure ElegantOTA interface hooks on route port handles
-  ElegantOTA.begin(&server);
-  
-  server.begin();
-  webSocket.begin();
-
+void core1NetworkIngestTask(void * pvParameters) {
   while(true) {
-    server.handleClient();
-    webSocket.loop();
-    ElegantOTA.loop();
-
-    if (newPacketAvailable) {
-      StaticJsonDocument<256> doc;
-      JsonArray bins = doc.createNestedArray("bins");
-      
-      portENTER_CRITICAL(&dataMutex);
-      for(int i=0; i<16; i++) bins.add(sharedPacket.binData[i]);
-      doc["mode"] = config.visualizerMode;
-      newPacketAvailable = false;
-      portEXIT_CRITICAL(&dataMutex);
-
-      String jsonString;
-      serializeJson(doc, jsonString);
-      webSocket.broadcastTXT(jsonString);
+    if (isUdpConnected) {
+      int packetSize = udp.parsePacket();
+      if (packetSize >= 16 && packetSize < 512) {
+        int readLen = udp.read((char*)globalNetworkPacketBuffer, packetSize);
+        if (readLen >= 16) {
+          portENTER_CRITICAL(&dataMutex);
+          validPacketCount++; 
+          lastPacketTime = millis(); 
+          
+          int dataOffset = readLen - 16; 
+          uint8_t floorGate = config.audioFloor;
+          float gainMultiplier = (float)config.audioGain / 10.0f;
+          
+          for (int b = 0; b < 16; b++) {
+            uint8_t rawVal = globalNetworkPacketBuffer[dataOffset + b];
+            if (rawVal <= floorGate) {
+              sharedVisualizerBins[b] = 0;
+            } else {
+              int processed = (int)((rawVal - floorGate) * gainMultiplier);
+              sharedVisualizerBins[b] = (processed > 255) ? 255 : (uint8_t)processed;
+            }
+          }
+          newPacketAvailable = true;
+          portEXIT_CRITICAL(&dataMutex);
+        }
+      }
     }
-    vTaskDelay(pdMS_TO_TICKS(12)); 
+    vTaskDelay(pdMS_TO_TICKS(2)); 
   }
 }
 
 void setup() {
-  Serial.begin(115200);
-
-  pinMode(4, OUTPUT);
-  digitalWrite(4, HIGH);
-
-  gfx->begin();
-  gfx->setRotation(1);
-  gfx->fillScreen(RGB565_BLACK);
-  gfx->setTextSize(2);
-  gfx->setTextColor(RGB565_WHITE);
-  gfx->setCursor(10, 40);
-  gfx->println("Booting Client Node...");
-
+  Serial.begin(115200); delay(500); loadSettingsFromFlash();
+  pinMode(4, OUTPUT); digitalWrite(4, HIGH);
+  bus = new Arduino_ESP32SPI(16, 5, 18, 19, -1, VSPI_HOST);
+  gfx = new Arduino_ST7789(bus, 23, config.displayRotation, true, 135, 240, 52, 40, 53, 40);
+  gfx->begin(80000000L); gfx->fillScreen(RGB565_BLACK);
+  
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(400); }
+  while (WiFi.status() != WL_CONNECTED) delay(200);
 
-  // ----------------------------------------------------
-  // MANDATORY 2-SECOND DELAY SPLASH SCREEN FOR BOOT METRICS
-  // ----------------------------------------------------
-  gfx->fillScreen(RGB565_BLACK);
-  gfx->setCursor(10, 25);
-  gfx->setTextColor(RGB565_GREEN);
-  gfx->println("SYSTEM STATUS: ONLINE");
-  
-  gfx->setTextColor(RGB565_WHITE);
-  gfx->setCursor(10, 55);
-  gfx->print("IP: "); 
-  gfx->println(WiFi.localIP());
-  
-  gfx->setCursor(10, 85);
-  gfx->print("VER: ");
-  gfx->setTextColor(RGB565_YELLOW);
-  gfx->println(FIRMWARE_VERSION);
-  
-  // Lock display execution pattern exactly for 2 seconds to make information readable
-  delay(2000); 
-  
-  gfx->fillScreen(RGB565_BLACK); // Clear layout for visualizer execution canvas
-
-  udp.beginMulticast(IPAddress(239,0,0,1), config.udpPort);
+  beginUdpMulticast();
   xTaskCreatePinnedToCore(core0WebTask, "WebTask", 8192, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(core1NetworkIngestTask, "NetIngest", 4096, NULL, 2, &networkTaskHandle, 1);
 }
 
 void loop() {
-  int packetSize = udp.parsePacket();
-  if (packetSize >= sizeof(WledAudioPacket)) {
-    WledAudioPacket rawPacket;
-    udp.read((char*)&rawPacket, sizeof(WledAudioPacket));
+  if (triggerHardwareReboot) {
+    if(networkTaskHandle != NULL) vTaskDelete(networkTaskHandle);
+    udp.stop(); webSocket.close(); server.stop(); WiFi.disconnect(true);
+    vTaskDelay(pdMS_TO_TICKS(250)); ESP.restart();
+  }
+  if (triggerUdpReinit) { triggerUdpReinit = false; beginUdpMulticast(); }
 
-    if (memcmp(rawPacket.header, "wsa2", 4) == 0) {
+  if (isTestModeActive) {
+    uint16_t testColors[] = {RGB565_RED, RGB565_GREEN, RGB565_BLUE, RGB565_WHITE};
+    const char* webHex[]  = {"#ff0000", "#00ff00", "#0000ff", "#ffffff"};
+    uint8_t currentRotation = config.displayRotation;
+    
+    gfx->setRotation(currentRotation);
+    for(int c = 0; c < 4; c++) {
+      testColorHexWeb = webHex[c]; gfx->fillScreen(testColors[c]);
+      gfx->setTextSize(2); gfx->setTextColor(RGB565_BLACK); gfx->setCursor(15, 40);
+      gfx->printf("ROTATION ID: %d", currentRotation);
+      gfx->setCursor(15, 75);
+      if (currentRotation == 1 || currentRotation == 3) { gfx->print("LANDSCAPE MODE"); } else { gfx->print("PORTRAIT MODE"); }
+      vTaskDelay(pdMS_TO_TICKS(1000)); 
+    }
+    isTestModeActive = false; gfx->fillScreen(RGB565_BLACK); lastPacketTime = millis(); return;
+  }
+
+  // FIXED: Removed redundant udp.parsePacket() call. Core 1 now checks the asynchronous timeout status smoothly
+  if (isUdpConnected) {
+    if (!newPacketAvailable && (millis() - lastPacketTime > 150)) {
       portENTER_CRITICAL(&dataMutex);
-      memcpy(&sharedPacket, &rawPacket, sizeof(WledAudioPacket));
-      newPacketAvailable = true;
-      uint8_t targetMode = config.visualizerMode;
-      portEXIT_CRITICAL(&dataMutex);
-
-      int sW = gfx->width();
-      int sH = gfx->height();
-      int numBars = 16;
-      int gap = 2;
-      int barW = (sW - (gap * (numBars + 1))) / numBars;
-
-      gfx->startWrite();
-      for (int i = 0; i < numBars; i++) {
-        int rawVal = sharedPacket.binData[i];
-        int barH = map(rawVal, 0, 255, 0, sH - 12);
-        int xPos = gap + (i * (barW + gap));
-        
-        uint16_t color = RGB565_GREEN;
-        if (targetMode == 2) {
-          uint8_t r = (i * 16); uint8_t g = 255 - r; uint8_t b = 128;
-          color = gfx->color565(r, g, b);
-        }
-
-        if (targetMode == 1) { 
-          int midY = sH / 2;
-          int halfH = barH / 2;
-          gfx->writeFillRect(xPos, midY - halfH, barW, halfH * 2, color);
-          gfx->writeFillRect(xPos, 0, barW, midY - halfH, RGB565_BLACK);
-          gfx->writeFillRect(xPos, midY + halfH, barW, sH - (midY + halfH), RGB565_BLACK);
-        } else { 
-          int yPos = sH - barH;
-          gfx->writeFillRect(xPos, yPos, barW, barH, color);
-          gfx->writeFillRect(xPos, 0, barW, yPos, RGB565_BLACK);
-
-          if (barH >= peakHolds[i]) {
-            peakHolds[i] = barH;
-          } else {
-            if (peakHolds[i] > 0) peakHolds[i]--;
-          }
-          if(peakHolds[i] > 0) {
-            gfx->writeFillRect(xPos, sH - peakHolds[i], barW, 2, RGB565_RED);
-          }
+      bool hasDataToDecay = false;
+      for (int b = 0; b < 16; b++) {
+        if (sharedVisualizerBins[b] > 0) {
+          if (sharedVisualizerBins[b] > 35) sharedVisualizerBins[b] -= 35; else sharedVisualizerBins[b] = 0;
+          hasDataToDecay = true;
         }
       }
-      gfx->endWrite();
+      if (!hasDataToDecay) {
+        for (int i = 0; i < 16; i++) { peakHolds[i] = 0; previousBins[i] = 0; }
+        gfx->fillScreen(RGB565_BLACK);
+        lastRenderedPacketCount = 0; 
+      } else { 
+        newPacketAvailable = true; 
+      }
+      lastPacketTime = millis(); 
+      portEXIT_CRITICAL(&dataMutex);
     }
   }
+
+  if (newPacketAvailable && !isTestModeActive) {
+    uint8_t localBins[16]; uint8_t targetMode; uint8_t activeRotation;
+    unsigned long currentValidCount;
+    
+    portENTER_CRITICAL(&dataMutex);
+    memcpy(localBins, sharedVisualizerBins, 16);
+    targetMode = config.visualizerMode; activeRotation = config.displayRotation;
+    currentValidCount = validPacketCount;
+    newPacketAvailable = false; 
+    portEXIT_CRITICAL(&dataMutex);
+
+    int baseW = 240; int baseH = 135;
+    if (activeRotation == 0 || activeRotation == 2) { baseW = 135; baseH = 240; }
+    gfx->setRotation(activeRotation);
+    int numBars = 16; int gap = 2;
+    int barW = (baseW - (gap * (numBars + 1))) / numBars;
+
+    if (currentValidCount != lastRenderedPacketCount) {
+      lastRenderedPacketCount = currentValidCount;
+      char countStr[32];
+      snprintf(countStr, sizeof(countStr), "PKT:%lu", currentValidCount);
+      gfx->setTextSize(1); gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK); 
+      gfx->setCursor(baseW - 55, 2); gfx->print(countStr);
+    }
+
+    gfx->startWrite();
+    for (int i = 0; i < numBars; i++) {
+      int rawVal = localBins[i]; 
+      if (rawVal == 0 && peakHolds[i] > 0) { if (peakHolds[i] > 4) peakHolds[i] -= 5; else peakHolds[i] = 0; }
+      int barH = map(rawVal, 0, 255, 0, baseH - 12);
+      int xPos = gap + (i * (barW + gap));
+
+      if (barH >= peakHolds[i]) peakHolds[i] = barH; 
+      else if (peakHolds[i] > 0) { if (peakHolds[i] > 2) peakHolds[i] -= 3; else peakHolds[i] = 0; }
+
+      if (rawVal == previousBins[i] && barH == 0 && peakHolds[i] == 0) continue; 
+      previousBins[i] = rawVal;
+
+      uint16_t color = RGB565_GREEN;
+      if (targetMode == 1) color = RGB565_CYAN;
+      else if (targetMode == 2) color = gfx->color565((i * 16), 255 - (i * 16), 128); 
+      else if (targetMode == 3) color = gfx->color565(255, 255 - rawVal, 0);         
+      else if (targetMode == 4) color = gfx->color565(rawVal, 0, 255);                 
+
+      int x, y, w, h;
+      if (targetMode == 1) { 
+        int midY = baseH / 2; int halfH = barH / 2;
+        x = xPos; y = midY - halfH; w = barW; h = halfH * 2;
+        gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, 0, w, y, RGB565_BLACK);
+        gfx->writeFillRect(x, midY + halfH, w, baseH - (midY + halfH), RGB565_BLACK);
+      } else if (targetMode == 3) { 
+        x = xPos; y = 0; w = barW; h = barH;
+        gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, h, w, baseH - h, RGB565_BLACK);
+      } else { 
+        x = xPos; y = baseH - barH; w = barW; h = barH;
+        gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, 0, w, y, RGB565_BLACK);
+        if (peakHolds[i] > 0) gfx->writeFillRect(x, baseH - peakHolds[i], w, 2, RGB565_RED); 
+      }
+    }
+    gfx->endWrite();
+  }
+  vTaskDelay(pdMS_TO_TICKS(1)); 
 }
