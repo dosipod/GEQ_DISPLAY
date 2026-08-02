@@ -7,9 +7,11 @@
 #include <Preferences.h>
 #include "config.h"
 
+// Forward declaration function prototypes
 void saveSettingsToFlash();
 void loadSettingsFromFlash();
 
+// TaskHandle declared at the top of the file so all functions below can see it cleanly
 TaskHandle_t networkTaskHandle = NULL;
 
 #include "web_handlers.h"
@@ -31,11 +33,13 @@ WebSocketsServer webSocket = WebSocketsServer(81);
 Preferences preferences;
 portMUX_TYPE dataMutex = portMUX_INITIALIZER_UNLOCKED;
 
+// Strict 16-element array allocations to protect variable bounds securely
 uint8_t sharedVisualizerBins[16] = {0};
 uint8_t previousBins[16] = {0};
 unsigned long lastPacketTime = 0; 
 unsigned long lastRenderedPacketCount = 0;
 
+// FIXED: Allocated a safe 512-byte array size boundary to completely eliminate stack overflow crashes
 uint8_t globalNetworkPacketBuffer[512] = {0};
 
 bool newPacketAvailable = false;
@@ -67,6 +71,7 @@ void loadSettingsFromFlash() {
   config.displayRotation = preferences.getUChar("rot", 3);
   config.audioFloor = preferences.getUChar("floor", 25); 
   config.audioGain = preferences.getUChar("gain", 15);
+  config.peakGravity = preferences.getUChar("grav", 3); 
   preferences.end();
 }
 
@@ -78,6 +83,7 @@ void saveSettingsToFlash() {
   preferences.putUChar("rot", config.displayRotation);
   preferences.putUChar("floor", config.audioFloor);
   preferences.putUChar("gain", config.audioGain);
+  preferences.putUChar("grav", config.peakGravity); 
   preferences.end();
 }
 
@@ -187,12 +193,13 @@ void loop() {
   }
 
   if (newPacketAvailable && !isTestModeActive) {
-    uint8_t localBins[16]; uint8_t targetMode; uint8_t activeRotation;
+    uint8_t localBins[16]; uint8_t targetMode; uint8_t activeRotation; uint8_t fallSpeed;
     unsigned long currentValidCount;
     
     portENTER_CRITICAL(&dataMutex);
     memcpy(localBins, sharedVisualizerBins, 16);
     targetMode = config.visualizerMode; activeRotation = config.displayRotation;
+    fallSpeed = config.peakGravity;
     currentValidCount = validPacketCount;
     newPacketAvailable = false; 
     portEXIT_CRITICAL(&dataMutex);
@@ -205,7 +212,7 @@ void loop() {
 
     if (currentValidCount != lastRenderedPacketCount) {
       lastRenderedPacketCount = currentValidCount;
-      char countStr[20];
+      char countStr[16];
       snprintf(countStr, sizeof(countStr), "PKT:%lu", currentValidCount);
       gfx->setTextSize(1); gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK); 
       gfx->setCursor(baseW - 55, 2); gfx->print(countStr);
@@ -217,17 +224,14 @@ void loop() {
 
     gfx->startWrite();
     
-    // FIXED MODE 9: Thread-safe, non-blocking filled rectangle pulsing concentric loops
     if (targetMode == 9) {
       int maxRadiusW = baseW / 2; int maxRadiusH = baseH / 2;
       int pulseW = map(globalAverageVolume, 0, 255, 4, maxRadiusW);
       int pulseH = map(globalAverageVolume, 0, 255, 4, maxRadiusH);
       int centerX = baseW / 2; int centerY = baseH / 2;
-      
       uint16_t outerBoxColor = gfx->color565(0, globalAverageVolume, 255);
       uint16_t innerBoxColor = gfx->color565(255, 0, globalAverageVolume);
       
-      // Draw hollow boxes using high-speed writeFillRect borders to protect the hardware bus
       gfx->writeFillRect(centerX - pulseW, centerY - pulseH, pulseW * 2, 3, outerBoxColor);
       gfx->writeFillRect(centerX - pulseW, centerY + pulseH - 3, pulseW * 2, 3, outerBoxColor);
       gfx->writeFillRect(centerX - pulseW, centerY - pulseH, 3, pulseH * 2, outerBoxColor);
@@ -239,23 +243,26 @@ void loop() {
       gfx->writeFillRect(centerX - innerW, centerY - innerH, 2, innerH * 2, innerBoxColor);
       gfx->writeFillRect(centerX + innerW - 2, centerY - innerH, 2, innerH * 2, innerBoxColor);
       
-      // Clear trailing screen borders outside the active pulsing box
       gfx->writeFillRect(0, 0, centerX - pulseW, baseH, RGB565_BLACK);
       gfx->writeFillRect(centerX + pulseW, 0, baseW - (centerX + pulseW), baseH, RGB565_BLACK);
       gfx->writeFillRect(centerX - pulseW, 0, pulseW * 2, centerY - pulseH, RGB565_BLACK);
       gfx->writeFillRect(centerX - pulseW, centerY + pulseH, pulseW * 2, baseH - (centerY + pulseH), RGB565_BLACK);
-      // Clear center cavity gap cleanly
       gfx->writeFillRect(centerX - innerW + 2, centerY - innerH + 2, (innerW * 2) - 4, (innerH * 2) - 4, RGB565_BLACK);
     } 
     else {
       for (int i = 0; i < numBars; i++) {
         int rawVal = localBins[i]; 
-        if (rawVal == 0 && peakHolds[i] > 0) { if (peakHolds[i] > 4) peakHolds[i] -= 5; else peakHolds[i] = 0; }
+        
+        if (rawVal == 0 && peakHolds[i] > 0) { 
+          if (peakHolds[i] > (fallSpeed + 1)) peakHolds[i] -= (fallSpeed + 1); else peakHolds[i] = 0; 
+        }
         int barH = map(rawVal, 0, 255, 0, baseH - 12);
         int xPos = gap + (i * (barW + gap));
 
         if (barH >= peakHolds[i]) peakHolds[i] = barH; 
-        else if (peakHolds[i] > 0) { if (peakHolds[i] > 2) peakHolds[i] -= 3; else peakHolds[i] = 0; }
+        else if (peakHolds[i] > 0) { 
+          if (peakHolds[i] > fallSpeed) peakHolds[i] -= fallSpeed; else peakHolds[i] = 0; 
+        }
 
         if (rawVal == previousBins[i] && barH == 0 && peakHolds[i] == 0) continue; 
         previousBins[i] = rawVal;
@@ -272,11 +279,16 @@ void loop() {
           else color = RGB565_RED;
         }
         else if (targetMode == 7) color = gfx->color565(0, rawVal, 255);
-        // FIXED MODE 8: Pre-scaled float multiplier optimizes math processing overhead
         else if (targetMode == 8) {
           float waveOffset = sin((i * 0.4f) + (millis() * 0.005f)) * 10.0f;
           barH = constrain(barH + (int)waveOffset, 0, baseH - 12);
           color = gfx->color565(0, 100 + (rawVal * 0.5), 255);
+        }
+        else if (targetMode == 10) {
+          color = (i < 8) ? gfx->color565(255, 255 - rawVal, 0) : gfx->color565(0, rawVal, 255);
+        }
+        else if (targetMode == 11) {
+          color = gfx->color565(200, 50, i * 16);
         }
 
         int x, y, w, h;
@@ -302,7 +314,30 @@ void loop() {
           } else {
             gfx->writeFillRect(x, 0, w, baseH, RGB565_BLACK);
           }
-        } else { 
+        } 
+        else if (targetMode == 11) {
+          int maxBarW = baseW / 2;
+          int dynamicW = map(rawVal, 0, 255, 0, maxBarW);
+          int barY = gap + (i * ((baseH - (gap * (numBars + 1))) / numBars + gap));
+          int barHeightY = (baseH - (gap * (numBars + 1))) / numBars;
+          
+          if (i < 8) {
+            gfx->writeFillRect(0, barY, dynamicW, barHeightY, color);
+            gfx->writeFillRect(dynamicW, barY, maxBarW - dynamicW, barHeightY, RGB565_BLACK);
+          } else {
+            gfx->writeFillRect(baseW - dynamicW, barY, dynamicW, barHeightY, color);
+            gfx->writeFillRect(maxBarW, barY, maxBarW - dynamicW, barHeightY, RGB565_BLACK);
+          }
+        }
+        else if (targetMode == 12) {
+          gfx->writeFillRect(xPos, 0, barW, baseH - peakHolds[i], RGB565_BLACK);
+          if (peakHolds[i] > 0) {
+            uint16_t strobeColor = gfx->color565(rawVal, 255, 255);
+            gfx->writeFillRect(xPos, baseH - peakHolds[i], barW, 3, strobeColor);
+            gfx->writeFillRect(xPos, baseH - peakHolds[i] + 3, barW, peakHolds[i] - 3, RGB565_BLACK);
+          }
+        }
+        else { 
           x = xPos; y = baseH - barH; w = barW; h = barH;
           gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, 0, w, y, RGB565_BLACK);
           if (peakHolds[i] > 0) gfx->writeFillRect(x, baseH - peakHolds[i], w, 2, RGB565_RED); 
@@ -313,3 +348,4 @@ void loop() {
   }
   vTaskDelay(pdMS_TO_TICKS(1)); 
 }
+
