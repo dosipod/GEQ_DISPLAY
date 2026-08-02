@@ -85,7 +85,6 @@ inline void core0WebTask(void * pvParameters) {
   server.begin();
   webSocket.begin();
 
-  // Track the independent frame timing interval for the webpage rendering stream
   unsigned long lastBrowserUpdateTimestamp = 0;
 
   while(true) {
@@ -98,7 +97,6 @@ inline void core0WebTask(void * pvParameters) {
       String jsonString; serializeJson(doc, jsonString); webSocket.broadcastTXT(jsonString);
       vTaskDelay(pdMS_TO_TICKS(100));
     } 
-    // Broadcasts telemetry data to the web interface at a steady 30fps cadence (every 33ms)
     else if (millis() - lastBrowserUpdateTimestamp > 33) {
       lastBrowserUpdateTimestamp = millis();
       StaticJsonDocument<512> doc; 
@@ -118,3 +116,4 @@ inline void core0WebTask(void * pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(5)); 
   }
 }
+

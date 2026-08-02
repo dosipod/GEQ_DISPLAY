@@ -36,7 +36,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <h2>Live Preview</h2>
     <canvas id="canvas" width="240" height="135"></canvas>
     <div class="diag-box" id="liveDiag">STREAM HARDWARE STATISTICS -> PKT: 0</div>
-    <!-- FIXED: Instant interface refresh button executes cleanly with zero pop-up alert warnings -->
     <button type="button" class="btn-info" onclick="window.location.reload(true)">Refresh Interface View</button>
     <div class="version-tag" id="webVer">Loading Build Manifest...</div>
     <a href="/update" class="ota-link" target="_blank">Firmware Update Dashboard (OTA)</a>
@@ -62,6 +61,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <option value="2">Rainbow Flow Spectrum</option>
         <option value="3">Top-Down Fire Equalizer</option>
         <option value="4">Matrix Pulse Waves</option>
+        <option value="5">Double Mirror Peak (Magenta/Cyan)</option>
+        <option value="6">Volume Intensity Flash (VU Green-Yellow-Red)</option>
+        <option value="7">Neon Grid Wave (Blue/White)</option>
+        <!-- FIXED: Added options for Mode 8 and Mode 9 -->
+        <option value="8">Fluid Ocean Wave (Sine Blue)</option>
+        <option value="9">Infinite Center Pulse (Expanding Box)</option>
       </select>
       <label>Hardware Display Rotation</label>
       <select id="rotation" name="displayRotation">
@@ -91,18 +96,54 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('liveDiag').innerText = "STREAM HARDWARE STATISTICS -> PKT: " + (data.pktCount || 0);
         var w = (240 / 16) - 2;
         var hasActiveBars = false;
+        
+        // Compute an average value across all bins for the mode 9 scaling engine preview
+        var avgVol = 0;
+        for(var i=0; i<16; i++) avgVol += data.bins[i];
+        avgVol = avgVol / 16;
+
         for(var i=0; i<16; i++) {
-          var h = (data.bins[i] / 255) * 135;
-          if (data.bins[i] > 0) hasActiveBars = true;
+          var rawVal = data.bins[i];
+          var h = (rawVal / 255) * 135;
+          if (rawVal > 0) hasActiveBars = true;
+          
           if (data.mode == 2) ctx.fillStyle = 'hsl(' + (i * 22) + ', 100%, 50%)';
-          else if (data.mode == 3) ctx.fillStyle = 'rgb(255, ' + (255 - (data.bins[i])) + ', 0)';
-          else if (data.mode == 4) ctx.fillStyle = 'rgb(' + data.bins[i] + ', 0, 255)';
+          else if (data.mode == 3) ctx.fillStyle = 'rgb(255, ' + (255 - rawVal) + ', 0)';
+          else if (data.mode == 4) ctx.fillStyle = 'rgb(' + rawVal + ', 0, 255)';
           else if (data.mode == 1) ctx.fillStyle = '#00e5ff';
+          else if (data.mode == 5) ctx.fillStyle = (i < 8) ? '#ff00ff' : '#00e5ff';
+          else if (data.mode == 6) {
+            if (rawVal < 100) ctx.fillStyle = '#00e676';
+            else if (rawVal < 200) ctx.fillStyle = '#ffeb3b';
+            else ctx.fillStyle = '#ff5252';
+          }
+          else if (data.mode == 7) ctx.fillStyle = 'rgb(0, ' + rawVal + ', 255)';
+          else if (data.mode == 8) ctx.fillStyle = 'rgb(0, ' + (100 + Math.floor(rawVal*0.6)) + ', 255)';
           else ctx.fillStyle = '#00e676';
           
-          if (data.mode == 1) ctx.fillRect(i * (w + 2), (135/2) - (h/2), w, h);
-          else if (data.mode == 3) ctx.fillRect(i * (w + 2), 0, w, h);
-          else ctx.fillRect(i * (w + 2), 135 - h, w, h);
+          if (data.mode == 1) {
+            ctx.fillRect(i * (w + 2), (135/2) - (h/2), w, h);
+          } else if (data.mode == 3) {
+            ctx.fillRect(i * (w + 2), 0, w, h);
+          } else if (data.mode == 5) {
+            var qH = h / 2;
+            ctx.fillRect(i * (w + 2), 0, w, qH);
+            ctx.fillRect(i * (w + 2), 135 - qH, w, qH);
+          } else if (data.mode == 7) {
+            if (h > 3) {
+              ctx.fillStyle = '#ffffff'; ctx.fillRect(i * (w + 2), 135 - h, w, 3);
+              ctx.fillStyle = 'rgb(0, ' + rawVal + ', 255)'; ctx.fillRect(i * (w + 2), 135 - h + 3, w, h - 3);
+            }
+          } else if (data.mode == 9) {
+            // Mode 9 browser layout placeholder renderer
+            if (i == 0) {
+              var pW = (avgVol / 255) * 100; var pH = (avgVol / 255) * 80;
+              ctx.strokeStyle = '#00e676'; ctx.lineWidth = 4;
+              ctx.strokeRect((240/2)-(pW/2), (135/2)-(pH/2), pW, pH);
+            }
+          } else {
+            ctx.fillRect(i * (w + 2), 135 - h, w, h);
+          }
         }
         if (!hasActiveBars) { ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, 240, 135); }
       };
