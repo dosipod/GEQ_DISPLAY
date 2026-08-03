@@ -51,6 +51,19 @@ inline void handleSetMode() {
   }
 }
 
+inline void handleSetPower() {
+  if (server.hasArg("state")) {
+    bool newState = (server.arg("state").toInt() == 1);
+    portENTER_CRITICAL(&dataMutex);
+    config.isDisplayOn = newState;
+    portEXIT_CRITICAL(&dataMutex);
+    saveSettingsToFlash();
+    server.send(200, "text/plain", "OK");
+  } else {
+    server.send(400, "text/plain", "Missing parameter");
+  }
+}
+
 inline void handleSetSlider() {
   if (server.hasArg("floor")) {
     portENTER_CRITICAL(&dataMutex);
@@ -108,6 +121,7 @@ inline void handleNotFound() {
   if (path == "/" || path == "") handleRoot();
   else if (path == "/get-config") handleGetConfig();
   else if (path == "/set-mode") handleSetMode();
+  else if (path == "/set-power") handleSetPower();
   else if (path == "/set-slider") handleSetSlider();
   else if (path == "/save-config") handleSaveConfig();
   else if (path == "/reboot") handleReboot();
@@ -119,6 +133,7 @@ inline void core0WebTask(void * pvParameters) {
   server.on("/", handleRoot);
   server.on("/get-config", handleGetConfig);
   server.on("/set-mode", handleSetMode);
+  server.on("/set-power", handleSetPower);
   server.on("/set-slider", handleSetSlider);
   server.on("/save-config", handleSaveConfig);
   server.on("/test-display", handleTestDisplay);

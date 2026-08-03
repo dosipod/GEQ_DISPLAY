@@ -21,6 +21,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .btn-secondary:hover { background: #00e5ff; color: #000; }
     .btn-danger { background: #ff5252; color: #fff; }
     .btn-danger:hover { background: #cc0000; }
+    .btn-power { background: #4caf50; color: #fff; width: 100%; margin-top: 5px; }
+    .btn-power.off { background: #757575; color: #fff; }
     .control-group { margin: 15px 0; text-align: left; }
     label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
     .slider-row { display: flex; align-items: center; gap: 10px; }
@@ -127,6 +129,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <div class="card">
         <h2>Settings</h2>
         
+        <!-- Power Switch Control -->
+        <div class="control-group">
+          <label>Display Hardware Power</label>
+          <button class="btn btn-power" id="btnPower" onclick="togglePower()">Display: ON</button>
+        </div>
+
         <div class="control-group">
           <label>Display Rotation</label>
           <select id="displayRotation">
@@ -202,10 +210,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
   <script>
     let ws;
+    let currentMode = 0;
+    let isDisplayOnState = true;
 
     function buildBars() {
       let box = document.getElementById('vizBox');
-      // Keep background grid inside box
       box.innerHTML = '<div class="grid-bg"></div>';
       for(let i=0; i<16; i++) {
         let bar = document.createElement('div');
@@ -213,6 +222,28 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         bar.id = 'bar' + i;
         box.appendChild(bar);
       }
+    }
+
+    function getBarColor(mode, i, val) {
+      if (mode == 0) return '#00e5ff';
+      if (mode == 1) return '#00ffff';
+      if (mode == 2) return `hsl(${i * 22}, 100%, 50%)`;
+      if (mode == 3) return `rgb(255, ${255 - val}, 0)`;
+      if (mode == 4) return `rgb(${val}, 0, 255)`;
+      if (mode == 5) return (i < 8) ? '#ff00ff' : '#00ffff';
+      if (mode == 6) {
+        if (val < 100) return '#00ff00';
+        if (val < 200) return '#ffff00';
+        return '#ff0000';
+      }
+      if (mode == 7) return `rgb(0, ${val}, 255)`;
+      if (mode == 8) return `rgb(0, ${Math.min(255, 100 + val * 0.5)}, 255)`;
+      if (mode == 10) return (i < 8) ? `rgb(255, ${255 - val}, 0)` : `rgb(0, ${val}, 255)`;
+      if (mode == 11) return `rgb(200, 50, ${i * 16})`;
+      if (mode == 13) return (val > 150) ? '#ff00ff' : `rgb(0, ${val}, ${i * 8})`;
+      if (mode == 14) return '#00ff00';
+      if (mode == 15) return `rgb(${val}, ${255 - val}, 255)`;
+      return '#00e5ff';
     }
 
     function initWS() {
@@ -223,12 +254,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         if(data.pktCount !== undefined) {
           document.getElementById('pktStat').innerText = "Packets Received: " + data.pktCount;
         }
+        if(data.mode !== undefined) {
+          currentMode = data.mode;
+        }
         if(data.bins && data.bins.length === 16) {
           for(let i=0; i<16; i++) {
             let bar = document.getElementById('bar' + i);
             if(bar) {
               let pct = (data.bins[i] / 255 * 100);
               bar.style.height = Math.max(pct, 1.0) + '%';
+              bar.style.backgroundColor = getBarColor(currentMode, i, data.bins[i]);
             }
           }
         }
@@ -248,11 +283,31 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       setTimeout(() => { if(el.innerText === msg) el.innerText = ''; }, 3000);
     }
 
+    function updatePowerUI(isOn) {
+      isDisplayOnState = isOn;
+      let btn = document.getElementById('btnPower');
+      if (isOn) {
+        btn.innerText = "Display: ON";
+        btn.className = "btn btn-power";
+      } else {
+        btn.innerText = "Display: OFF";
+        btn.className = "btn btn-power off";
+      }
+    }
+
+    function togglePower() {
+      let newState = !isDisplayOnState;
+      updatePowerUI(newState);
+      fetch('/set-power?state=' + (newState ? '1' : '0'))
+        .then(() => setStatus('Power Toggled!'));
+    }
+
     function loadConfig() {
       fetch('/get-config')
         .then(res => res.json())
         .then(cfg => {
           document.getElementById('visualizerMode').value = cfg.visualizerMode;
+          currentMode = cfg.visualizerMode;
           document.getElementById('displayRotation').value = cfg.displayRotation;
           document.getElementById('multicastIP').value = cfg.multicastIP;
           document.getElementById('udpPort').value = cfg.udpPort;
@@ -267,6 +322,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           document.getElementById('peakGravity').value = cfg.peakGravity;
           document.getElementById('lblPeakGravity').innerText = cfg.peakGravity;
           
+          if(cfg.isDisplayOn !== undefined) {
+            updatePowerUI(cfg.isDisplayOn);
+          }
+          
           if(cfg.version) {
             document.getElementById('fwVersion').innerText = 'Firmware: v' + cfg.version;
           }
@@ -279,6 +338,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     function autoApplyMode(modeVal) {
+      currentMode = parseInt(modeVal);
       fetch('/set-mode?value=' + modeVal)
         .then(() => setStatus('Mode Changed!'));
     }
@@ -292,7 +352,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         audioFloor: parseInt(document.getElementById('audioFloor').value),
         audioGain: parseFloat(document.getElementById('audioGain').value),
         peakGravity: parseInt(document.getElementById('peakGravity').value),
-        isDisplayOn: true
+        isDisplayOn: isDisplayOnState
       };
       fetch('/save-config', {
         method: 'POST',
@@ -302,7 +362,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     function triggerTest() { fetch('/test-display'); setStatus('Running Rotation Test...'); }
-    function rebootDevice() { if(confirm('Reboot ESP32?')) fetch('/reboot'); }
+    function rebootDevice() { fetch('/reboot'); }
 
     window.onload = function() {
       buildBars();
