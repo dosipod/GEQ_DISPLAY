@@ -6,7 +6,6 @@
 #include <Preferences.h>
 #include <Arduino_GFX_Library.h>
 
-// Instantiating the global objects first so the sub-headers can see them perfectly on load
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
 Preferences preferences;
@@ -15,7 +14,7 @@ portMUX_TYPE dataMutex = portMUX_INITIALIZER_UNLOCKED;
 
 #include "config.h"
 
-// FIXED array definitions match strict 16-element allocations cleanly across all files
+DevConfig config;
 uint8_t sharedVisualizerBins[16] = {0};
 uint8_t previousBins[16] = {0};
 uint16_t peakHolds[16] = {0}; 
@@ -46,7 +45,6 @@ Arduino_GFX *gfx = nullptr;
 
 const char* ssid     = "toi";
 const char* password = "dcba@4321";
-DevConfig config;
 
 void setup() {
   Serial.begin(115200); delay(500); loadSettingsFromFlash();
@@ -63,8 +61,9 @@ void setup() {
   xTaskCreatePinnedToCore(core1NetworkIngestTask, "NetIngest", 4096, NULL, 2, &networkTaskHandle, 1);
   
   internalDisplaySleepStateTracker = !config.isDisplayOn;
-  if(internalDisplaySleepStateTracker) { gfx->displaySleep(); digitalWrite(4, LOW); }
+  if(internalDisplaySleepStateTracker) { gfx->displayOff(); digitalWrite(4, LOW); }
 }
+
 void loop() {
   if (triggerHardwareReboot) {
     if(networkTaskHandle != NULL) vTaskDelete(networkTaskHandle);
@@ -79,13 +78,13 @@ void loop() {
   if (!currentPowerSetting) {
     if (!internalDisplaySleepStateTracker) {
       internalDisplaySleepStateTracker = true; gfx->fillScreen(RGB565_BLACK);
-      gfx->displaySleep(); digitalWrite(4, LOW); 
+      gfx->displayOff(); digitalWrite(4, LOW); 
     }
     vTaskDelay(pdMS_TO_TICKS(50)); return; 
   } else {
     if (internalDisplaySleepStateTracker) {
       internalDisplaySleepStateTracker = false; digitalWrite(4, HIGH);
-      gfx->displayWake(); gfx->fillScreen(RGB565_BLACK);
+      gfx->displayOn(); gfx->fillScreen(RGB565_BLACK);
     }
   }
 

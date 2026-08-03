@@ -5,190 +5,310 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
-  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-  <title>TTGO Visualizer Dashboard</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audio Visualizer Control</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; display: flex; flex-direction: row; gap: 20px; align-items: flex-start; justify-content: flex-start; }
-    .card { background: #1e1e1e; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); width: 100%; max-width: 360px; box-sizing: border-box; }
-    h2 { margin-top: 0; color: #00e676; text-align: left; }
-    label { display: block; margin: 12px 0 4px; font-weight: bold; font-size: 14px; }
-    input, select, button { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #333; background: #252525; color: #fff; box-sizing: border-box; }
-    input[type="range"] { padding: 0; height: 10px; cursor: pointer; background: #333; }
-    .slider-val { float: right; color: #00e676; font-weight: bold; }
-    button { background: #00e676; color: #121212; font-weight: bold; cursor: pointer; margin-top: 15px; border: none; text-align: center; }
-    button:hover { background: #00b55c; }
-    .btn-warn { background: #ff9100; color: #121212; }
-    .btn-warn:hover { background: #cc7400; }
+    body { font-family: Arial, sans-serif; background: #121212; color: #fff; margin: 0; padding: 20px; }
+    h2 { color: #00e5ff; margin-top: 0; }
+    .container { display: flex; flex-direction: row; gap: 20px; max-width: 1050px; margin: 0 auto; flex-wrap: wrap; }
+    .left-panel { flex: 1.2; min-width: 360px; }
+    .right-panel { flex: 1; min-width: 300px; }
+    .card { background: #1e1e1e; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); margin-bottom: 20px; }
+    .btn { background: #00e5ff; color: #000; border: none; padding: 10px 16px; margin: 8px 4px 8px 0; font-weight: bold; border-radius: 6px; cursor: pointer; font-size: 13px; transition: 0.2s; }
+    .btn:hover { background: #00b3cc; }
+    .btn-secondary { background: #333; color: #00e5ff; border: 1px solid #00e5ff; }
+    .btn-secondary:hover { background: #00e5ff; color: #000; }
     .btn-danger { background: #ff5252; color: #fff; }
-    .btn-danger:hover { background: #e04444; }
-    .btn-info { background: #0288d1; color: #fff; margin-top: 10px; }
-    .btn-info:hover { background: #01579b; }
-    #canvas { width: 100%; height: 180px; background: #000; border-radius: 6px; display: block; }
-    .ota-link { display: block; text-align: left; color: #a0a0a0; text-decoration: none; margin-top: 15px; font-size: 12px; }
-    .ota-link:hover { color: #00e676; }
-    .row { display: flex; gap: 10px; }
-    .version-tag { text-align: left; color: #777; font-size: 12px; margin-top: 10px; font-weight: bold; }
-    .diag-box { background: #252525; padding: 10px; border-radius: 6px; border: 1px solid #333; margin-top: 15px; font-size: 13px; font-family: monospace; color: #ffeb3b; }
-    .toggle-row { display: flex; justify-content: space-between; align-items: center; background: #252525; padding: 10px; border-radius: 6px; border: 1px solid #333; margin: 12px 0; }
-    .toggle-row label { margin: 0; cursor: pointer; }
-    .toggle-row input { width: auto; cursor: pointer; }
+    .btn-danger:hover { background: #cc0000; }
+    .control-group { margin: 15px 0; text-align: left; }
+    label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; }
+    .slider-row { display: flex; align-items: center; gap: 10px; }
+    input[type=range] { flex: 1; accent-color: #00e5ff; cursor: pointer; }
+    .val-badge { font-family: monospace; font-size: 14px; color: #00e5ff; width: 40px; text-align: right; }
+    input[type=number], input[type=text], select { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; box-sizing: border-box; }
+    
+    /* Visualizer Canvas Layout with Axis & Grid */
+    .viz-wrapper { display: flex; flex-direction: column; margin-bottom: 15px; }
+    .viz-main { display: flex; flex-direction: row; align-items: center; }
+    
+    .y-axis-container { display: flex; flex-direction: column; justify-content: space-between; height: 280px; padding-right: 8px; text-align: right; font-family: monospace; font-size: 10px; color: #777; }
+    .y-axis-title { writing-mode: vertical-lr; transform: rotate(180deg); text-align: center; font-size: 11px; color: #00e5ff; font-weight: bold; padding-right: 6px; letter-spacing: 1px; }
+    
+    .visualizer-box { 
+      position: relative;
+      flex: 1; 
+      display: flex; 
+      align-items: flex-end; 
+      justify-content: center; 
+      gap: 3px; 
+      height: 280px; 
+      background: #000; 
+      padding: 0 10px; 
+      border-radius: 6px; 
+      border: 1px solid #333;
+      overflow: hidden;
+    }
+    
+    /* 32x16 Background Grid */
+    .grid-bg {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-size: calc(100% / 16) calc(100% / 32);
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .bar { flex: 1; background: #00e5ff; transition: height 0.05s ease; min-height: 2px; border-radius: 2px 2px 0 0; z-index: 2; }
+    
+    .x-axis-container { display: flex; flex-direction: row; justify-content: space-between; margin-left: 55px; padding-top: 6px; font-family: monospace; font-size: 9px; color: #777; }
+    .x-axis-title { text-align: center; font-size: 11px; color: #00e5ff; font-weight: bold; margin-top: 4px; margin-left: 55px; letter-spacing: 1px; }
+
+    .stat-text { font-size: 12px; color: #00e5ff; margin-bottom: 10px; font-family: monospace; }
+    .version-tag { font-size: 11px; color: #777; font-family: monospace; margin-top: 6px; }
+    #saveStatus { font-size: 12px; color: #00e5ff; margin-top: 8px; min-height: 16px; font-family: monospace; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h2>Live Preview</h2>
-    <canvas id="canvas" width="240" height="135"></canvas>
-    <div class="diag-box" id="liveDiag">STREAM HARDWARE STATISTICS -> PKT: 0</div>
-    <button type="button" class="btn-info" onclick="window.location.reload(true)">Refresh Interface View</button>
-    <div class="version-tag" id="webVer">Loading Build Manifest...</div>
-    <a href="/update" class="ota-link" target="_blank">Firmware Update Dashboard (OTA)</a>
-  </div>
-  <div class="card">
-    <h2>Control Console</h2>
-    <form id="cfgForm">
-      <div class="toggle-row">
-        <label for="isDisplayOn">Master Display Power Switch</label>
-        <input type="checkbox" id="isDisplayOn" name="isDisplayOn" checked>
+  <div class="container">
+    <!-- Left Panel: Live Visualizer -->
+    <div class="left-panel">
+      <div class="card">
+        <h2>Live Preview</h2>
+        <div class="stat-text" id="pktStat">Packets Received: 0</div>
+        
+        <div class="viz-wrapper">
+          <div class="viz-main">
+            <div class="y-axis-title">Amplitude (%)</div>
+            <div class="y-axis-container">
+              <span>100</span>
+              <span>75</span>
+              <span>50</span>
+              <span>25</span>
+              <span>0</span>
+            </div>
+            
+            <div class="visualizer-box" id="vizBox">
+              <div class="grid-bg"></div>
+            </div>
+          </div>
+          
+          <!-- X-Axis Frequency Scale & Title -->
+          <div class="x-axis-container">
+            <span>20</span>
+            <span>60</span>
+            <span>125</span>
+            <span>250</span>
+            <span>500</span>
+            <span>1k</span>
+            <span>2k</span>
+            <span>4k</span>
+            <span>8k</span>
+            <span>16k</span>
+          </div>
+          <div class="x-axis-title">Frequency (Hz)</div>
+        </div>
+
+        <div>
+          <button class="btn" onclick="triggerTest()">Test Rotation</button>
+          <button class="btn btn-secondary" onclick="refreshLiveView()">Refresh Live View</button>
+          <button class="btn btn-danger" onclick="rebootDevice()">Reboot</button>
+        </div>
+        
+        <div class="version-tag" id="fwVersion">Firmware: v...</div>
       </div>
-      <label>UDP Target Port</label>
-      <input type="number" id="port" name="udpPort" min="1" max="65535">
-      <label>Multicast Target Core IP</label>
-      <input type="text" id="ip" name="multicastIP">
-      <label>Audio Squelch Cutoff <span class="slider-val" id="floorVal">25</span></label>
-      <input type="range" id="audioFloor" min="0" max="255" value="25" oninput="document.getElementById('floorVal').innerText=this.value">
-      <label>Visual Gain Multiplier <span class="slider-val" id="gainVal">1.5</span></label>
-      <input type="range" id="audioGain" min="5" max="35" value="15" step="1" oninput="document.getElementById('gainVal').innerText=(this.value/10).toFixed(1)">
-      <label>Peak Dot Gravity Speed <span class="slider-val" id="gravVal">3</span></label>
-      <input type="range" id="peakGravity" min="1" max="12" value="3" oninput="document.getElementById('gravVal').innerText=this.value">
-      <label>Spectrum Render Effect Style</label>
-      <select id="effect" name="visualizerMode">
-        <option value="0">0. Classical GEQ (Green)</option>
-        <option value="1">1. Center-Out Mirror (Cyan)</option>
-        <option value="2">2. Rainbow Flow Spectrum</option>
-        <option value="3">3. Top-Down Fire Equalizer</option>
-        <option value="4">4. Matrix Pulse Waves</option>
-        <option value="5">5. Double Mirror Peak (Magenta/Cyan)</option>
-        <option value="6">6. Volume Intensity Flash (VU Green-Yellow-Red)</option>
-        <option value="7">7. Neon Grid Wave (Blue/White)</option>
-        <option value="8">8. Fluid Ocean Wave (Sine Blue)</option>
-        <option value="9">9. Infinite Center Pulse (Expanding Box)</option>
-        <option value="10">10. Fire & Ice (Split Thermal Spectrum)</option>
-        <option value="11">11. Side-to-Center Crush Mirror</option>
-        <option value="12">12. Particle Dust (Strobe Peaks Only)</option>
-        <option value="13">13. Cyberpunk Matrix Wave</option>
-        <option value="14">14. Bass-Driven Strobe Stutter</option>
-        <option value="15">15. Peak Decay Snake</option>
-      </select>
-      <label>Hardware Display Rotation</label>
-      <select id="rotation" name="displayRotation">
-        <option value="0">0&deg; (Vertical Standard)</option>
-        <option value="1">90&deg; (Landscape Right)</option>
-        <option value="2">180&deg; (Vertical Flipped)</option>
-        <option value="3">270&deg; (Landscape Left)</option>
-      </select>
-      <button type="button" onclick="submitConfig()">Save Options</button>
-    </form>
-    <div class="row">
-      <button type="button" class="btn-warn" onclick="triggerTest()">Test Display Screen</button>
-      <button type="button" class="btn-danger" onclick="triggerReboot()">Reboot Hardware</button>
+    </div>
+
+    <!-- Right Panel: Controls & Settings -->
+    <div class="right-panel">
+      <div class="card">
+        <h2>Settings</h2>
+        
+        <div class="control-group">
+          <label>Display Rotation</label>
+          <select id="displayRotation">
+            <option value="0">0: Portrait (0&deg;)</option>
+            <option value="1">1: Landscape (90&deg;)</option>
+            <option value="2">2: Inverted Portrait (180&deg;)</option>
+            <option value="3">3: Inverted Landscape (270&deg;)</option>
+          </select>
+        </div>
+        
+        <div class="control-group">
+          <label>UDP Multicast IP</label>
+          <input type="text" id="multicastIP" value="239.0.0.1">
+        </div>
+        
+        <div class="control-group">
+          <label>UDP Port</label>
+          <input type="number" id="udpPort" value="11980">
+        </div>
+
+        <!-- Sliders with instant live updates -->
+        <div class="control-group">
+          <label>Audio Floor Threshold (0-255)</label>
+          <div class="slider-row">
+            <input type="range" id="audioFloor" min="0" max="255" value="5" oninput="updateSlider('floor', this.value, 'lblAudioFloor')">
+            <span class="val-badge" id="lblAudioFloor">5</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Audio Gain Multiplier (0.1 - 10.0)</label>
+          <div class="slider-row">
+            <input type="range" id="audioGain" min="0.1" max="10.0" step="0.1" value="1.0" oninput="updateSlider('gain', this.value, 'lblAudioGain')">
+            <span class="val-badge" id="lblAudioGain">1.0</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Peak Gravity / Fall Speed (1-10)</label>
+          <div class="slider-row">
+            <input type="range" id="peakGravity" min="1" max="10" value="3" oninput="updateSlider('gravity', this.value, 'lblPeakGravity')">
+            <span class="val-badge" id="lblPeakGravity">3</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Visualizer Mode (Applies Immediately)</label>
+          <select id="visualizerMode" onchange="autoApplyMode(this.value)">
+            <option value="0">0: Default Spectrum</option>
+            <option value="1">1: Centered Expand</option>
+            <option value="2">2: Rainbow Shift</option>
+            <option value="3">3: Top-Down Fall</option>
+            <option value="4">4: Purple/Magenta Solid</option>
+            <option value="5">5: Dual Split Ends</option>
+            <option value="6">6: Green-Yellow-Red Traffic</option>
+            <option value="7">7: Peak Line White Cap</option>
+            <option value="8">8: Wave Distortion</option>
+            <option value="9">9: Center Square Pulse</option>
+            <option value="10">10: Dual Color Split</option>
+            <option value="11">11: Horizontal Bars Split</option>
+            <option value="12">12: Peak Strobe Only</option>
+            <option value="13">13: Magenta Flash High</option>
+            <option value="14">14: Invert Flash on Beat</option>
+            <option value="15">15: Snake Peak Trail</option>
+          </select>
+        </div>
+
+        <button class="btn" style="width:100%; margin-top:10px;" onclick="saveConfig()">Save Network Settings</button>
+        <div id="saveStatus"></div>
+      </div>
     </div>
   </div>
+
   <script>
-    var ws;
-    var ctx = document.getElementById('canvas').getContext('2d');
-    function connectWS() {
-      ws = new WebSocket('ws://' + window.location.hostname + ':81/');
-      ws.onmessage = function(evt) {
-        var data = JSON.parse(evt.data);
-        ctx.clearRect(0, 0, 240, 135);
-        if (data.isTest) {
-          ctx.fillStyle = data.testColor; ctx.fillRect(0, 0, 240, 135); return;
-        }
-        document.getElementById('liveDiag').innerText = "STREAM HARDWARE STATISTICS -> PKT: " + (data.pktCount || 0);
-        var w = (240 / 16) - 2;
-        var hasActiveBars = false;
-        var avgVol = 0;
-        for(var i=0; i<16; i++) avgVol += data.bins[i];
-        avgVol = avgVol / 16;
-        for(var i=0; i<16; i++) {
-          var rawVal = data.bins[i];
-          var h = (rawVal / 255) * 135;
-          if (rawVal > 0) hasActiveBars = true;
-          if (data.mode == 2) ctx.fillStyle = 'hsl(' + (i * 22) + ', 100%, 50%)';
-          else if (data.mode == 3) ctx.fillStyle = 'rgb(255, ' + (255 - rawVal) + ', 0)';
-          else if (data.mode == 4) ctx.fillStyle = 'rgb(' + rawVal + ', 0, 255)';
-          else if (data.mode == 1) ctx.fillStyle = '#00e5ff';
-          else if (data.mode == 5) ctx.fillStyle = (i < 8) ? '#ff00ff' : '#00e5ff';
-          else if (data.mode == 6) {
-            if (rawVal < 100) ctx.fillStyle = '#00e676';
-            else if (rawVal < 200) ctx.fillStyle = '#ffeb3b';
-            else ctx.fillStyle = '#ff5252';
-          }
-          else if (data.mode == 7) ctx.fillStyle = 'rgb(0, ' + rawVal + ', 255)';
-          else if (data.mode == 8) ctx.fillStyle = 'rgb(0, ' + (100 + Math.floor(rawVal*0.6)) + ', 255)';
-          else if (data.mode == 10) ctx.fillStyle = (i < 8) ? '#ff5252' : '#0288d1';
-          else if (data.mode == 11) ctx.fillStyle = '#ff9100';
-          else if (data.mode == 12 || data.mode == 15) ctx.fillStyle = '#ffffff';
-          else if (data.mode == 13) ctx.fillStyle = '#ff00ff';
-          else if (data.mode == 14) ctx.fillStyle = (avgVol > 120) ? '#ffffff' : '#00e676';
-          else ctx.fillStyle = '#00e676';
-          if (data.mode == 1) {
-            ctx.fillRect(i * (w + 2), (135/2) - (h/2), w, h);
-          } else if (data.mode == 3) {
-            ctx.fillRect(i * (w + 2), 0, w, h);
-          } else if (data.mode == 5) {
-            var qH = h / 2;
-            ctx.fillRect(i * (w + 2), 0, w, qH);
-            ctx.fillRect(i * (w + 2), 135 - qH, w, qH);
-          } else if (data.mode == 7) {
-            if (h > 3) {
-              ctx.fillStyle = '#ffffff'; ctx.fillRect(i * (w + 2), 135 - h, w, 3);
-              ctx.fillStyle = 'rgb(0, ' + rawVal + ', 255)'; ctx.fillRect(i * (w + 2), 135 - h + 3, w, h - 3);
-            }
-          } else if (data.mode == 9) {
-            if (i == 0) {
-              var pW = (avgVol / 255) * 100; var pH = (avgVol / 255) * 80;
-              ctx.strokeStyle = '#00e676'; ctx.lineWidth = 4;
-              ctx.strokeRect((240/2)-(pW/2), (135/2)-(pH/2), pW, pH);
-            }
-          } else {
-            ctx.fillRect(i * (w + 2), 135 - h, w, h);
-          }
-        }
-        if (!hasActiveBars) { ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, 240, 135); }
-      };
-      ws.onclose = function() { setTimeout(connectWS, 2000); };
+    let ws;
+
+    function buildBars() {
+      let box = document.getElementById('vizBox');
+      // Keep background grid inside box
+      box.innerHTML = '<div class="grid-bg"></div>';
+      for(let i=0; i<16; i++) {
+        let bar = document.createElement('div');
+        bar.className = 'bar';
+        bar.id = 'bar' + i;
+        box.appendChild(bar);
+      }
     }
-    fetch('/get-config').then(r => r.json()).then(data => {
-      document.getElementById('port').value = data.udpPort;
-      document.getElementById('ip').value = data.multicastIP;
-      document.getElementById('audioFloor').value = data.audioFloor;
-      document.getElementById('audioGain').value = data.audioGain;
-      document.getElementById('peakGravity').value = data.peakGravity || 3;
-      document.getElementById('isDisplayOn').checked = (data.isDisplayOn !== false);
-      document.getElementById('floorVal').innerText = data.audioFloor;
-      document.getElementById('gainVal').innerText = (data.audioGain/10).toFixed(1);
-      document.getElementById('gravVal').innerText = data.peakGravity || 3;
-      document.getElementById('effect').value = data.visualizerMode;
-      document.getElementById('rotation').value = data.displayRotation;
-      document.getElementById('webVer').innerText = "FIRMWARE RUNNING: " + data.version;
-      connectWS();
-    });
-    function submitConfig() {
-      var payload = {
-        udpPort: parseInt(document.getElementById('port').value),
-        multicastIP: document.getElementById('ip').value,
+
+    function initWS() {
+      if (ws) { ws.close(); }
+      ws = new WebSocket('ws://' + window.location.hostname + ':81');
+      ws.onmessage = function(event) {
+        let data = JSON.parse(event.data);
+        if(data.pktCount !== undefined) {
+          document.getElementById('pktStat').innerText = "Packets Received: " + data.pktCount;
+        }
+        if(data.bins && data.bins.length === 16) {
+          for(let i=0; i<16; i++) {
+            let bar = document.getElementById('bar' + i);
+            if(bar) {
+              let pct = (data.bins[i] / 255 * 100);
+              bar.style.height = Math.max(pct, 1.0) + '%';
+            }
+          }
+        }
+      };
+      ws.onclose = function() { setTimeout(initWS, 2000); };
+    }
+
+    function refreshLiveView() {
+      buildBars();
+      initWS();
+      setStatus('Live View Refreshed!');
+    }
+
+    function setStatus(msg) {
+      let el = document.getElementById('saveStatus');
+      el.innerText = msg;
+      setTimeout(() => { if(el.innerText === msg) el.innerText = ''; }, 3000);
+    }
+
+    function loadConfig() {
+      fetch('/get-config')
+        .then(res => res.json())
+        .then(cfg => {
+          document.getElementById('visualizerMode').value = cfg.visualizerMode;
+          document.getElementById('displayRotation').value = cfg.displayRotation;
+          document.getElementById('multicastIP').value = cfg.multicastIP;
+          document.getElementById('udpPort').value = cfg.udpPort;
+          
+          document.getElementById('audioFloor').value = cfg.audioFloor || 0;
+          document.getElementById('lblAudioFloor').innerText = cfg.audioFloor || 0;
+          
+          let g = parseFloat(cfg.audioGain || 1.0).toFixed(1);
+          document.getElementById('audioGain').value = g;
+          document.getElementById('lblAudioGain').innerText = g;
+          
+          document.getElementById('peakGravity').value = cfg.peakGravity;
+          document.getElementById('lblPeakGravity').innerText = cfg.peakGravity;
+          
+          if(cfg.version) {
+            document.getElementById('fwVersion').innerText = 'Firmware: v' + cfg.version;
+          }
+        });
+    }
+
+    function updateSlider(param, val, labelId) {
+      document.getElementById(labelId).innerText = val;
+      fetch('/set-slider?' + param + '=' + val);
+    }
+
+    function autoApplyMode(modeVal) {
+      fetch('/set-mode?value=' + modeVal)
+        .then(() => setStatus('Mode Changed!'));
+    }
+
+    function saveConfig() {
+      let cfg = {
+        visualizerMode: parseInt(document.getElementById('visualizerMode').value),
+        displayRotation: parseInt(document.getElementById('displayRotation').value),
+        multicastIP: document.getElementById('multicastIP').value,
+        udpPort: parseInt(document.getElementById('udpPort').value),
         audioFloor: parseInt(document.getElementById('audioFloor').value),
-        audioGain: parseInt(document.getElementById('audioGain').value),
+        audioGain: parseFloat(document.getElementById('audioGain').value),
         peakGravity: parseInt(document.getElementById('peakGravity').value),
-        isDisplayOn: document.getElementById('isDisplayOn').checked,
-        visualizerMode: parseInt(document.getElementById('effect').value),
-        displayRotation: parseInt(document.getElementById('rotation').value)
+        isDisplayOn: true
       };
-      fetch('/save-config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+      fetch('/save-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(cfg)
+      }).then(() => setStatus('Network Settings Saved!'));
     }
-    function triggerTest() { fetch('/test-display', { method: 'POST' }); }
-    function triggerReboot() { fetch('/reboot'); }
+
+    function triggerTest() { fetch('/test-display'); setStatus('Running Rotation Test...'); }
+    function rebootDevice() { if(confirm('Reboot ESP32?')) fetch('/reboot'); }
+
+    window.onload = function() {
+      buildBars();
+      initWS();
+      loadConfig();
+    };
   </script>
 </body>
 </html>

@@ -8,7 +8,6 @@
 #include "config.h"
 #include "html.h"
 
-// FIXED: Explicit global scope linkage map tells the compiler where these trackers live across files
 extern WebServer server;
 extern WebSocketsServer webSocket;
 extern uint8_t sharedVisualizerBins[];
@@ -21,10 +20,6 @@ extern volatile bool triggerHardwareReboot;
 extern volatile bool triggerUdpReinit;
 extern unsigned long validPacketCount; 
 
-// Forward declarations of core NVS flash profile managers
-void saveSettingsToFlash();
-void loadSettingsFromFlash();
-
 inline void handleRoot() { server.send_P(200, "text/html", INDEX_HTML); }
 
 inline void handleGetConfig() {
@@ -32,7 +27,7 @@ inline void handleGetConfig() {
   doc["udpPort"] = config.udpPort;
   doc["multicastIP"] = String(config.multicastIP);
   doc["audioFloor"] = (int)config.audioFloor;
-  doc["audioGain"] = (int)config.audioGain;
+  doc["audioGain"] = config.audioGain; 
   doc["peakGravity"] = (int)config.peakGravity; 
   doc["isDisplayOn"] = config.isDisplayOn; 
   doc["visualizerMode"] = config.visualizerMode;
@@ -41,6 +36,39 @@ inline void handleGetConfig() {
   String out;
   serializeJson(doc, out); 
   server.send(200, "application/json", out);
+}
+
+inline void handleSetMode() {
+  if (server.hasArg("value")) {
+    uint8_t newMode = server.arg("value").toInt();
+    portENTER_CRITICAL(&dataMutex);
+    config.visualizerMode = newMode;
+    portEXIT_CRITICAL(&dataMutex);
+    saveSettingsToFlash();
+    server.send(200, "text/plain", "OK");
+  } else {
+    server.send(400, "text/plain", "Missing parameter");
+  }
+}
+
+inline void handleSetSlider() {
+  if (server.hasArg("floor")) {
+    portENTER_CRITICAL(&dataMutex);
+    config.audioFloor = server.arg("floor").toInt();
+    portEXIT_CRITICAL(&dataMutex);
+  }
+  if (server.hasArg("gain")) {
+    portENTER_CRITICAL(&dataMutex);
+    config.audioGain = server.arg("gain").toFloat();
+    portEXIT_CRITICAL(&dataMutex);
+  }
+  if (server.hasArg("gravity")) {
+    portENTER_CRITICAL(&dataMutex);
+    config.peakGravity = server.arg("gravity").toInt();
+    portEXIT_CRITICAL(&dataMutex);
+  }
+  saveSettingsToFlash();
+  server.send(200, "text/plain", "OK");
 }
 
 inline void handleSaveConfig() {
@@ -52,12 +80,14 @@ inline void handleSaveConfig() {
       config.udpPort = doc["udpPort"] | 11980;
       String incomingIP = doc["multicastIP"] | "239.0.0.1";
       strncpy(config.multicastIP, incomingIP.c_str(), 15);
-      config.multicastIP = '\0'; 
+      config.multicastIP[15] = '\0'; 
       config.audioFloor = doc["audioFloor"].as<uint8_t>();
-      config.audioGain = doc["audioGain"].as<uint8_t>();
+      config.audioGain = doc["audioGain"].as<float>();
       config.peakGravity = doc["peakGravity"] | 3; 
-      config.isDisplayOn = doc["isDisplayOn"].as<bool>(); 
-      config.visualizerMode = doc["visualizerMode"] | 1;
+      if (doc.containsKey("isDisplayOn")) {
+        config.isDisplayOn = doc["isDisplayOn"].as<bool>();
+      }
+      config.visualizerMode = doc["visualizerMode"] | 0;
       config.displayRotation = doc["displayRotation"] | 3;
       portEXIT_CRITICAL(&dataMutex);
       
@@ -77,6 +107,8 @@ inline void handleNotFound() {
   String path = server.uri();
   if (path == "/" || path == "") handleRoot();
   else if (path == "/get-config") handleGetConfig();
+  else if (path == "/set-mode") handleSetMode();
+  else if (path == "/set-slider") handleSetSlider();
   else if (path == "/save-config") handleSaveConfig();
   else if (path == "/reboot") handleReboot();
   else if (path == "/test-display") handleTestDisplay();
@@ -86,6 +118,8 @@ inline void handleNotFound() {
 inline void core0WebTask(void * pvParameters) {
   server.on("/", handleRoot);
   server.on("/get-config", handleGetConfig);
+  server.on("/set-mode", handleSetMode);
+  server.on("/set-slider", handleSetSlider);
   server.on("/save-config", handleSaveConfig);
   server.on("/test-display", handleTestDisplay);
   server.on("/reboot", handleReboot);

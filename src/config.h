@@ -1,23 +1,48 @@
 #pragma once
 #include <Arduino.h>
+#include <Preferences.h>
 
-#define FIRMWARE_VERSION "v7.5.0-STABLE-BASE"
+#define FIRMWARE_VERSION "2.4.0"
 
-extern const char* ssid;
-extern const char* password;
+extern Preferences preferences;
 
 struct DevConfig {
   uint16_t udpPort = 11980;
-  char multicastIP[16] = "239.0.0.1"; // FIXED: Restored strict 16-element character string buffer bounds
-  uint8_t visualizerMode = 1; 
-  uint8_t displayRotation = 3; 
-  uint8_t audioFloor = 25; 
-  uint8_t audioGain = 15; 
-  uint8_t peakGravity = 3; 
-  bool isDisplayOn = true; 
+  char multicastIP[16] = "239.0.0.1";
+  uint8_t audioFloor = 5;
+  float audioGain = 1.0f;
+  uint8_t peakGravity = 3;
+  bool isDisplayOn = true;
+  uint8_t visualizerMode = 0;
+  uint8_t displayRotation = 3;
 };
+
 extern DevConfig config;
 
-extern const char INDEX_HTML[] PROGMEM;
+inline void loadSettingsFromFlash() {
+  preferences.begin("geq_config", true);
+  config.udpPort = preferences.getUInt("udpPort", 11980);
+  String savedIP = preferences.getString("multicastIP", "239.0.0.1");
+  strncpy(config.multicastIP, savedIP.c_str(), 15);
+  config.multicastIP[15] = '\0';
+  config.audioFloor = preferences.getUChar("audioFloor", 5);
+  config.audioGain = preferences.getFloat("audioGain", 1.0f);
+  config.peakGravity = preferences.getUChar("peakGravity", 3);
+  config.isDisplayOn = preferences.getBool("isDisplayOn", true);
+  config.visualizerMode = preferences.getUChar("visualizerMode", 0);
+  config.displayRotation = preferences.getUChar("displayRotation", 3);
+  preferences.end();
+}
 
-
+inline void saveSettingsToFlash() {
+  preferences.begin("geq_config", false);
+  preferences.putUInt("udpPort", config.udpPort);
+  preferences.putString("multicastIP", String(config.multicastIP));
+  preferences.putUChar("audioFloor", config.audioFloor);
+  preferences.putFloat("audioGain", config.audioGain);
+  preferences.putUChar("peakGravity", config.peakGravity);
+  preferences.putBool("isDisplayOn", config.isDisplayOn);
+  preferences.putUChar("visualizerMode", config.visualizerMode);
+  preferences.putUChar("displayRotation", config.displayRotation);
+  preferences.end();
+}
