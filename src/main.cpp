@@ -3,44 +3,26 @@
 #include <WiFiUdp.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
-#include <Arduino_GFX_Library.h>
 #include <Preferences.h>
-#include "config.h"
+#include <Arduino_GFX_Library.h>
 
-// Forward declaration function prototypes
-void saveSettingsToFlash();
-void loadSettingsFromFlash();
-
-// TaskHandle declared at the top of the file so all functions below can see it cleanly
-TaskHandle_t networkTaskHandle = NULL;
-
-#include "web_handlers.h"
-
-#ifdef BLACK
-#undef BLACK
-#endif
-#ifdef GREEN
-#undef GREEN
-#endif
-
-const char* ssid     = "toi";
-const char* password = "dcba@4321";
-DevConfig config;
-
-WiFiUDP udp;
+// Instantiating the global objects first so the sub-headers can see them perfectly on load
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
 Preferences preferences;
+WiFiUDP udp;
 portMUX_TYPE dataMutex = portMUX_INITIALIZER_UNLOCKED;
 
-// Strict 16-element array allocations to protect variable bounds securely
+#include "config.h"
+
+// FIXED array definitions match strict 16-element allocations cleanly across all files
 uint8_t sharedVisualizerBins[16] = {0};
 uint8_t previousBins[16] = {0};
+uint16_t peakHolds[16] = {0}; 
+uint8_t globalNetworkPacketBuffer[512] = {0};
+
 unsigned long lastPacketTime = 0; 
 unsigned long lastRenderedPacketCount = 0;
-
-// FIXED: Allocated a safe 512-byte array size boundary to completely eliminate stack overflow crashes
-uint8_t globalNetworkPacketBuffer[512] = {0};
 
 bool newPacketAvailable = false;
 bool isTestModeActive = false;
@@ -49,91 +31,22 @@ String testColorHexWeb = "#000000";
 
 volatile bool triggerHardwareReboot = false;
 volatile bool triggerUdpReinit = false;
+bool internalDisplaySleepStateTracker = false;
 
-unsigned long lastDebugPrint = 0;
 unsigned long validPacketCount = 0;
 unsigned long droppedPacketCount = 0;
 
+TaskHandle_t networkTaskHandle = NULL;
 Arduino_DataBus *bus = nullptr;
 Arduino_GFX *gfx = nullptr;
-uint16_t peakHolds[16] = {0}; 
 
-void loadSettingsFromFlash() {
-  preferences.begin("geq_cfg", true);
-  config.udpPort = preferences.getUShort("port", 11980);
-  String ip = preferences.getString("ip", "239.0.0.1");
-  if (ip.length() < 7 || ip == "" || ip.startsWith("0.") || ip.endsWith(".0")) { 
-    ip = "239.0.0.1"; 
-  }
-  memset(config.multicastIP, 0, 16);
-  strncpy(config.multicastIP, ip.c_str(), 15);
-  config.visualizerMode = preferences.getUChar("mode", 1);
-  config.displayRotation = preferences.getUChar("rot", 3);
-  config.audioFloor = preferences.getUChar("floor", 25); 
-  config.audioGain = preferences.getUChar("gain", 15);
-  config.peakGravity = preferences.getUChar("grav", 3); 
-  preferences.end();
-}
+#include "network.h"     
+#include "web_handlers.h"
+#include "effects.h"     
 
-void saveSettingsToFlash() {
-  preferences.begin("geq_cfg", false);
-  preferences.putUShort("port", config.udpPort);
-  preferences.putString("ip", String(config.multicastIP));
-  preferences.putUChar("mode", config.visualizerMode);
-  preferences.putUChar("rot", config.displayRotation);
-  preferences.putUChar("floor", config.audioFloor);
-  preferences.putUChar("gain", config.audioGain);
-  preferences.putUChar("grav", config.peakGravity); 
-  preferences.end();
-}
-
-void beginUdpMulticast() {
-  isUdpConnected = false;
-  udp.stop();
-  vTaskDelay(pdMS_TO_TICKS(150)); 
-  const char* targetIPStr = (strlen(config.multicastIP) > 6) ? config.multicastIP : "239.0.0.1";
-  uint16_t targetPort = (config.udpPort > 0) ? config.udpPort : 11980;
-  IPAddress groupIP;
-  if (groupIP.fromString(targetIPStr)) { 
-    if (udp.beginMulticast(groupIP, targetPort)) {
-      Serial.printf("[NET] Listening on Multicast: %s:%d\n", targetIPStr, targetPort);
-      isUdpConnected = true;
-      lastPacketTime = millis();
-    }
-  }
-}
-
-void core1NetworkIngestTask(void * pvParameters) {
-  while(true) {
-    if (isUdpConnected) {
-      int packetSize = udp.parsePacket();
-      if (packetSize >= 16 && packetSize < 512) {
-        int readLen = udp.read((char*)globalNetworkPacketBuffer, packetSize);
-        if (readLen >= 16) {
-          portENTER_CRITICAL(&dataMutex);
-          validPacketCount++; 
-          lastPacketTime = millis(); 
-          int dataOffset = readLen - 16; 
-          uint8_t floorGate = config.audioFloor;
-          float gainMultiplier = (float)config.audioGain / 10.0f;
-          
-          for (int b = 0; b < 16; b++) {
-            uint8_t rawVal = globalNetworkPacketBuffer[dataOffset + b];
-            if (rawVal <= floorGate) {
-              sharedVisualizerBins[b] = 0;
-            } else {
-              int processed = (int)((rawVal - floorGate) * gainMultiplier);
-              sharedVisualizerBins[b] = (processed > 255) ? 255 : (uint8_t)processed;
-            }
-          }
-          newPacketAvailable = true;
-          portEXIT_CRITICAL(&dataMutex);
-        }
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(2)); 
-  }
-}
+const char* ssid     = "toi";
+const char* password = "dcba@4321";
+DevConfig config;
 
 void setup() {
   Serial.begin(115200); delay(500); loadSettingsFromFlash();
@@ -141,11 +54,16 @@ void setup() {
   bus = new Arduino_ESP32SPI(16, 5, 18, 19, -1, VSPI_HOST);
   gfx = new Arduino_ST7789(bus, 23, config.displayRotation, true, 135, 240, 52, 40, 53, 40);
   gfx->begin(80000000L); gfx->fillScreen(RGB565_BLACK);
+  
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) delay(200);
+  
   beginUdpMulticast();
   xTaskCreatePinnedToCore(core0WebTask, "WebTask", 8192, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(core1NetworkIngestTask, "NetIngest", 4096, NULL, 2, &networkTaskHandle, 1);
+  
+  internalDisplaySleepStateTracker = !config.isDisplayOn;
+  if(internalDisplaySleepStateTracker) { gfx->displaySleep(); digitalWrite(4, LOW); }
 }
 void loop() {
   if (triggerHardwareReboot) {
@@ -155,11 +73,26 @@ void loop() {
   }
   if (triggerUdpReinit) { triggerUdpReinit = false; beginUdpMulticast(); }
 
+  bool currentPowerSetting;
+  portENTER_CRITICAL(&dataMutex); currentPowerSetting = config.isDisplayOn; portEXIT_CRITICAL(&dataMutex);
+
+  if (!currentPowerSetting) {
+    if (!internalDisplaySleepStateTracker) {
+      internalDisplaySleepStateTracker = true; gfx->fillScreen(RGB565_BLACK);
+      gfx->displaySleep(); digitalWrite(4, LOW); 
+    }
+    vTaskDelay(pdMS_TO_TICKS(50)); return; 
+  } else {
+    if (internalDisplaySleepStateTracker) {
+      internalDisplaySleepStateTracker = false; digitalWrite(4, HIGH);
+      gfx->displayWake(); gfx->fillScreen(RGB565_BLACK);
+    }
+  }
+
   if (isTestModeActive) {
     uint16_t testColors[] = {RGB565_RED, RGB565_GREEN, RGB565_BLUE, RGB565_WHITE};
     const char* webHex[]  = {"#ff0000", "#00ff00", "#0000ff", "#ffffff"};
-    uint8_t currentRotation = config.displayRotation;
-    gfx->setRotation(currentRotation);
+    uint8_t currentRotation = config.displayRotation; gfx->setRotation(currentRotation);
     for(int c = 0; c < 4; c++) {
       testColorHexWeb = webHex[c]; gfx->fillScreen(testColors[c]);
       gfx->setTextSize(2); gfx->setTextColor(RGB565_BLACK); gfx->setCursor(15, 40);
@@ -182,37 +115,27 @@ void loop() {
       }
       if (!hasDataToDecay) {
         for (int i = 0; i < 16; i++) { peakHolds[i] = 0; previousBins[i] = 0; }
-        gfx->fillScreen(RGB565_BLACK);
-        lastRenderedPacketCount = 0; 
-      } else { 
-        newPacketAvailable = true; 
-      }
-      lastPacketTime = millis(); 
-      portEXIT_CRITICAL(&dataMutex);
+        gfx->fillScreen(RGB565_BLACK); lastRenderedPacketCount = 0; 
+      } else { newPacketAvailable = true; }
+      lastPacketTime = millis(); portEXIT_CRITICAL(&dataMutex);
     }
   }
 
   if (newPacketAvailable && !isTestModeActive) {
-    uint8_t localBins[16]; uint8_t targetMode; uint8_t activeRotation; uint8_t fallSpeed;
-    unsigned long currentValidCount;
-    
+    uint8_t localBins[16]; uint8_t targetMode; uint8_t activeRotation; uint8_t fallSpeed; unsigned long currentValidCount;
     portENTER_CRITICAL(&dataMutex);
     memcpy(localBins, sharedVisualizerBins, 16);
     targetMode = config.visualizerMode; activeRotation = config.displayRotation;
-    fallSpeed = config.peakGravity;
-    currentValidCount = validPacketCount;
-    newPacketAvailable = false; 
-    portEXIT_CRITICAL(&dataMutex);
+    fallSpeed = config.peakGravity; currentValidCount = validPacketCount;
+    newPacketAvailable = false; portEXIT_CRITICAL(&dataMutex);
 
     int baseW = 240; int baseH = 135;
     if (activeRotation == 0 || activeRotation == 2) { baseW = 135; baseH = 240; }
     gfx->setRotation(activeRotation);
-    int numBars = 16; int gap = 2;
-    int barW = (baseW - (gap * (numBars + 1))) / numBars;
+    int numBars = 16; int gap = 2; int barW = (baseW - (gap * (numBars + 1))) / numBars;
 
     if (currentValidCount != lastRenderedPacketCount) {
-      lastRenderedPacketCount = currentValidCount;
-      char countStr[16];
+      lastRenderedPacketCount = currentValidCount; char countStr[16];
       snprintf(countStr, sizeof(countStr), "PKT:%lu", currentValidCount);
       gfx->setTextSize(1); gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK); 
       gfx->setCursor(baseW - 55, 2); gfx->print(countStr);
@@ -223,14 +146,11 @@ void loop() {
     uint8_t globalAverageVolume = totalVolumeSum / 16;
 
     gfx->startWrite();
-    
     if (targetMode == 9) {
       int maxRadiusW = baseW / 2; int maxRadiusH = baseH / 2;
-      int pulseW = map(globalAverageVolume, 0, 255, 4, maxRadiusW);
-      int pulseH = map(globalAverageVolume, 0, 255, 4, maxRadiusH);
+      int pulseW = map(globalAverageVolume, 0, 255, 4, maxRadiusW); int pulseH = map(globalAverageVolume, 0, 255, 4, maxRadiusH);
       int centerX = baseW / 2; int centerY = baseH / 2;
-      uint16_t outerBoxColor = gfx->color565(0, globalAverageVolume, 255);
-      uint16_t innerBoxColor = gfx->color565(255, 0, globalAverageVolume);
+      uint16_t outerBoxColor = gfx->color565(0, globalAverageVolume, 255); uint16_t innerBoxColor = gfx->color565(255, 0, globalAverageVolume);
       
       gfx->writeFillRect(centerX - pulseW, centerY - pulseH, pulseW * 2, 3, outerBoxColor);
       gfx->writeFillRect(centerX - pulseW, centerY + pulseH - 3, pulseW * 2, 3, outerBoxColor);
@@ -243,109 +163,26 @@ void loop() {
       gfx->writeFillRect(centerX - innerW, centerY - innerH, 2, innerH * 2, innerBoxColor);
       gfx->writeFillRect(centerX + innerW - 2, centerY - innerH, 2, innerH * 2, innerBoxColor);
       
-      gfx->writeFillRect(0, 0, centerX - pulseW, baseH, RGB565_BLACK);
-      gfx->writeFillRect(centerX + pulseW, 0, baseW - (centerX + pulseW), baseH, RGB565_BLACK);
-      gfx->writeFillRect(centerX - pulseW, 0, pulseW * 2, centerY - pulseH, RGB565_BLACK);
-      gfx->writeFillRect(centerX - pulseW, centerY + pulseH, pulseW * 2, baseH - (centerY + pulseH), RGB565_BLACK);
+      gfx->writeFillRect(0, 0, centerX - pulseW, baseH, RGB565_BLACK); gfx->writeFillRect(centerX + pulseW, 0, baseW - (centerX + pulseW), baseH, RGB565_BLACK);
+      gfx->writeFillRect(centerX - pulseW, 0, pulseW * 2, centerY - pulseH, RGB565_BLACK); gfx->writeFillRect(centerX - pulseW, centerY + pulseH, pulseW * 2, baseH - (centerY + pulseH), RGB565_BLACK);
       gfx->writeFillRect(centerX - innerW + 2, centerY - innerH + 2, (innerW * 2) - 4, (innerH * 2) - 4, RGB565_BLACK);
     } 
     else {
       for (int i = 0; i < numBars; i++) {
         int rawVal = localBins[i]; 
-        
-        if (rawVal == 0 && peakHolds[i] > 0) { 
-          if (peakHolds[i] > (fallSpeed + 1)) peakHolds[i] -= (fallSpeed + 1); else peakHolds[i] = 0; 
-        }
-        int barH = map(rawVal, 0, 255, 0, baseH - 12);
-        int xPos = gap + (i * (barW + gap));
+        if (rawVal == 0 && peakHolds[i] > 0) { if (peakHolds[i] > (fallSpeed + 1)) peakHolds[i] -= (fallSpeed + 1); else peakHolds[i] = 0; }
+        int barH = map(rawVal, 0, 255, 0, baseH - 12); int xPos = gap + (i * (barW + gap));
 
         if (barH >= peakHolds[i]) peakHolds[i] = barH; 
-        else if (peakHolds[i] > 0) { 
-          if (peakHolds[i] > fallSpeed) peakHolds[i] -= fallSpeed; else peakHolds[i] = 0; 
-        }
+        else if (peakHolds[i] > 0) { if (peakHolds[i] > fallSpeed) peakHolds[i] -= fallSpeed; else peakHolds[i] = 0; }
 
         if (rawVal == previousBins[i] && barH == 0 && peakHolds[i] == 0) continue; 
         previousBins[i] = rawVal;
 
-        uint16_t color = RGB565_GREEN;
-        if (targetMode == 1) color = RGB565_CYAN;
-        else if (targetMode == 2) color = gfx->color565((i * 16), 255 - (i * 16), 128); 
-        else if (targetMode == 3) color = gfx->color565(255, 255 - rawVal, 0);         
-        else if (targetMode == 4) color = gfx->color565(rawVal, 0, 255);                 
-        else if (targetMode == 5) color = (i < 8) ? RGB565_MAGENTA : RGB565_CYAN;
-        else if (targetMode == 6) {
-          if (rawVal < 100) color = RGB565_GREEN;
-          else if (rawVal < 200) color = RGB565_YELLOW;
-          else color = RGB565_RED;
-        }
-        else if (targetMode == 7) color = gfx->color565(0, rawVal, 255);
-        else if (targetMode == 8) {
-          float waveOffset = sin((i * 0.4f) + (millis() * 0.005f)) * 10.0f;
-          barH = constrain(barH + (int)waveOffset, 0, baseH - 12);
-          color = gfx->color565(0, 100 + (rawVal * 0.5), 255);
-        }
-        else if (targetMode == 10) {
-          color = (i < 8) ? gfx->color565(255, 255 - rawVal, 0) : gfx->color565(0, rawVal, 255);
-        }
-        else if (targetMode == 11) {
-          color = gfx->color565(200, 50, i * 16);
-        }
-
-        int x, y, w, h;
-        if (targetMode == 1) { 
-          int midY = baseH / 2; int halfH = barH / 2;
-          x = xPos; y = midY - halfH; w = barW; h = halfH * 2;
-          gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, 0, w, y, RGB565_BLACK);
-          gfx->writeFillRect(x, midY + halfH, w, baseH - (midY + halfH), RGB565_BLACK);
-        } else if (targetMode == 3) { 
-          x = xPos; y = 0; w = barW; h = barH;
-          gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, h, w, baseH - h, RGB565_BLACK);
-        } else if (targetMode == 5) {
-          int quarterH = barH / 2;
-          gfx->writeFillRect(xPos, 0, barW, quarterH, color); 
-          gfx->writeFillRect(xPos, baseH - quarterH, barW, quarterH, color); 
-          gfx->writeFillRect(xPos, quarterH, barW, baseH - (quarterH * 2), RGB565_BLACK); 
-        } else if (targetMode == 7) {
-          x = xPos; y = baseH - barH; w = barW;
-          if (barH > 3) {
-            gfx->writeFillRect(x, y, w, 3, RGB565_WHITE); 
-            gfx->writeFillRect(x, y + 3, w, barH - 3, color); 
-            gfx->writeFillRect(x, 0, w, y, RGB565_BLACK);
-          } else {
-            gfx->writeFillRect(x, 0, w, baseH, RGB565_BLACK);
-          }
-        } 
-        else if (targetMode == 11) {
-          int maxBarW = baseW / 2;
-          int dynamicW = map(rawVal, 0, 255, 0, maxBarW);
-          int barY = gap + (i * ((baseH - (gap * (numBars + 1))) / numBars + gap));
-          int barHeightY = (baseH - (gap * (numBars + 1))) / numBars;
-          
-          if (i < 8) {
-            gfx->writeFillRect(0, barY, dynamicW, barHeightY, color);
-            gfx->writeFillRect(dynamicW, barY, maxBarW - dynamicW, barHeightY, RGB565_BLACK);
-          } else {
-            gfx->writeFillRect(baseW - dynamicW, barY, dynamicW, barHeightY, color);
-            gfx->writeFillRect(maxBarW, barY, maxBarW - dynamicW, barHeightY, RGB565_BLACK);
-          }
-        }
-        else if (targetMode == 12) {
-          gfx->writeFillRect(xPos, 0, barW, baseH - peakHolds[i], RGB565_BLACK);
-          if (peakHolds[i] > 0) {
-            uint16_t strobeColor = gfx->color565(rawVal, 255, 255);
-            gfx->writeFillRect(xPos, baseH - peakHolds[i], barW, 3, strobeColor);
-            gfx->writeFillRect(xPos, baseH - peakHolds[i] + 3, barW, peakHolds[i] - 3, RGB565_BLACK);
-          }
-        }
-        else { 
-          x = xPos; y = baseH - barH; w = barW; h = barH;
-          gfx->writeFillRect(x, y, w, h, color); gfx->writeFillRect(x, 0, w, y, RGB565_BLACK);
-          if (peakHolds[i] > 0) gfx->writeFillRect(x, baseH - peakHolds[i], w, 2, RGB565_RED); 
-        }
+        renderSpectrumEffects(targetMode, i, xPos, barW, baseW, baseH, barH, rawVal, fallSpeed, globalAverageVolume, localBins, previousBins);
       }
     }
     gfx->endWrite();
   }
   vTaskDelay(pdMS_TO_TICKS(1)); 
 }
-

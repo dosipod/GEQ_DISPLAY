@@ -8,6 +8,7 @@
 #include "config.h"
 #include "html.h"
 
+// FIXED: Explicit global scope linkage map tells the compiler where these trackers live across files
 extern WebServer server;
 extern WebSocketsServer webSocket;
 extern uint8_t sharedVisualizerBins[];
@@ -20,6 +21,10 @@ extern volatile bool triggerHardwareReboot;
 extern volatile bool triggerUdpReinit;
 extern unsigned long validPacketCount; 
 
+// Forward declarations of core NVS flash profile managers
+void saveSettingsToFlash();
+void loadSettingsFromFlash();
+
 inline void handleRoot() { server.send_P(200, "text/html", INDEX_HTML); }
 
 inline void handleGetConfig() {
@@ -28,6 +33,8 @@ inline void handleGetConfig() {
   doc["multicastIP"] = String(config.multicastIP);
   doc["audioFloor"] = (int)config.audioFloor;
   doc["audioGain"] = (int)config.audioGain;
+  doc["peakGravity"] = (int)config.peakGravity; 
+  doc["isDisplayOn"] = config.isDisplayOn; 
   doc["visualizerMode"] = config.visualizerMode;
   doc["displayRotation"] = config.displayRotation;
   doc["version"] = FIRMWARE_VERSION;
@@ -45,11 +52,13 @@ inline void handleSaveConfig() {
       config.udpPort = doc["udpPort"] | 11980;
       String incomingIP = doc["multicastIP"] | "239.0.0.1";
       strncpy(config.multicastIP, incomingIP.c_str(), 15);
-      config.multicastIP[15] = '\0'; 
+      config.multicastIP = '\0'; 
       config.audioFloor = doc["audioFloor"].as<uint8_t>();
       config.audioGain = doc["audioGain"].as<uint8_t>();
+      config.peakGravity = doc["peakGravity"] | 3; 
+      config.isDisplayOn = doc["isDisplayOn"].as<bool>(); 
       config.visualizerMode = doc["visualizerMode"] | 1;
-      config.displayRotation = doc["displayRotation"] | 1;
+      config.displayRotation = doc["displayRotation"] | 3;
       portEXIT_CRITICAL(&dataMutex);
       
       saveSettingsToFlash();
@@ -116,4 +125,3 @@ inline void core0WebTask(void * pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(5)); 
   }
 }
-

@@ -29,6 +29,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .row { display: flex; gap: 10px; }
     .version-tag { text-align: left; color: #777; font-size: 12px; margin-top: 10px; font-weight: bold; }
     .diag-box { background: #252525; padding: 10px; border-radius: 6px; border: 1px solid #333; margin-top: 15px; font-size: 13px; font-family: monospace; color: #ffeb3b; }
+    .toggle-row { display: flex; justify-content: space-between; align-items: center; background: #252525; padding: 10px; border-radius: 6px; border: 1px solid #333; margin: 12px 0; }
+    .toggle-row label { margin: 0; cursor: pointer; }
+    .toggle-row input { width: auto; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -43,30 +46,38 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <div class="card">
     <h2>Control Console</h2>
     <form id="cfgForm">
+      <div class="toggle-row">
+        <label for="isDisplayOn">Master Display Power Switch</label>
+        <input type="checkbox" id="isDisplayOn" name="isDisplayOn" checked>
+      </div>
       <label>UDP Target Port</label>
       <input type="number" id="port" name="udpPort" min="1" max="65535">
       <label>Multicast Target Core IP</label>
       <input type="text" id="ip" name="multicastIP">
-      
       <label>Audio Squelch Cutoff <span class="slider-val" id="floorVal">25</span></label>
       <input type="range" id="audioFloor" min="0" max="255" value="25" oninput="document.getElementById('floorVal').innerText=this.value">
-      
       <label>Visual Gain Multiplier <span class="slider-val" id="gainVal">1.5</span></label>
       <input type="range" id="audioGain" min="5" max="35" value="15" step="1" oninput="document.getElementById('gainVal').innerText=(this.value/10).toFixed(1)">
-
+      <label>Peak Dot Gravity Speed <span class="slider-val" id="gravVal">3</span></label>
+      <input type="range" id="peakGravity" min="1" max="12" value="3" oninput="document.getElementById('gravVal').innerText=this.value">
       <label>Spectrum Render Effect Style</label>
       <select id="effect" name="visualizerMode">
-        <option value="0">Classical GEQ (Green)</option>
-        <option value="1">Center-Out Mirror (Cyan)</option>
-        <option value="2">Rainbow Flow Spectrum</option>
-        <option value="3">Top-Down Fire Equalizer</option>
-        <option value="4">Matrix Pulse Waves</option>
-        <option value="5">Double Mirror Peak (Magenta/Cyan)</option>
-        <option value="6">Volume Intensity Flash (VU Green-Yellow-Red)</option>
-        <option value="7">Neon Grid Wave (Blue/White)</option>
-        <!-- FIXED: Added options for Mode 8 and Mode 9 -->
-        <option value="8">Fluid Ocean Wave (Sine Blue)</option>
-        <option value="9">Infinite Center Pulse (Expanding Box)</option>
+        <option value="0">0. Classical GEQ (Green)</option>
+        <option value="1">1. Center-Out Mirror (Cyan)</option>
+        <option value="2">2. Rainbow Flow Spectrum</option>
+        <option value="3">3. Top-Down Fire Equalizer</option>
+        <option value="4">4. Matrix Pulse Waves</option>
+        <option value="5">5. Double Mirror Peak (Magenta/Cyan)</option>
+        <option value="6">6. Volume Intensity Flash (VU Green-Yellow-Red)</option>
+        <option value="7">7. Neon Grid Wave (Blue/White)</option>
+        <option value="8">8. Fluid Ocean Wave (Sine Blue)</option>
+        <option value="9">9. Infinite Center Pulse (Expanding Box)</option>
+        <option value="10">10. Fire & Ice (Split Thermal Spectrum)</option>
+        <option value="11">11. Side-to-Center Crush Mirror</option>
+        <option value="12">12. Particle Dust (Strobe Peaks Only)</option>
+        <option value="13">13. Cyberpunk Matrix Wave</option>
+        <option value="14">14. Bass-Driven Strobe Stutter</option>
+        <option value="15">15. Peak Decay Snake</option>
       </select>
       <label>Hardware Display Rotation</label>
       <select id="rotation" name="displayRotation">
@@ -96,17 +107,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         document.getElementById('liveDiag').innerText = "STREAM HARDWARE STATISTICS -> PKT: " + (data.pktCount || 0);
         var w = (240 / 16) - 2;
         var hasActiveBars = false;
-        
-        // Compute an average value across all bins for the mode 9 scaling engine preview
         var avgVol = 0;
         for(var i=0; i<16; i++) avgVol += data.bins[i];
         avgVol = avgVol / 16;
-
         for(var i=0; i<16; i++) {
           var rawVal = data.bins[i];
           var h = (rawVal / 255) * 135;
           if (rawVal > 0) hasActiveBars = true;
-          
           if (data.mode == 2) ctx.fillStyle = 'hsl(' + (i * 22) + ', 100%, 50%)';
           else if (data.mode == 3) ctx.fillStyle = 'rgb(255, ' + (255 - rawVal) + ', 0)';
           else if (data.mode == 4) ctx.fillStyle = 'rgb(' + rawVal + ', 0, 255)';
@@ -119,8 +126,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           }
           else if (data.mode == 7) ctx.fillStyle = 'rgb(0, ' + rawVal + ', 255)';
           else if (data.mode == 8) ctx.fillStyle = 'rgb(0, ' + (100 + Math.floor(rawVal*0.6)) + ', 255)';
+          else if (data.mode == 10) ctx.fillStyle = (i < 8) ? '#ff5252' : '#0288d1';
+          else if (data.mode == 11) ctx.fillStyle = '#ff9100';
+          else if (data.mode == 12 || data.mode == 15) ctx.fillStyle = '#ffffff';
+          else if (data.mode == 13) ctx.fillStyle = '#ff00ff';
+          else if (data.mode == 14) ctx.fillStyle = (avgVol > 120) ? '#ffffff' : '#00e676';
           else ctx.fillStyle = '#00e676';
-          
           if (data.mode == 1) {
             ctx.fillRect(i * (w + 2), (135/2) - (h/2), w, h);
           } else if (data.mode == 3) {
@@ -135,7 +146,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
               ctx.fillStyle = 'rgb(0, ' + rawVal + ', 255)'; ctx.fillRect(i * (w + 2), 135 - h + 3, w, h - 3);
             }
           } else if (data.mode == 9) {
-            // Mode 9 browser layout placeholder renderer
             if (i == 0) {
               var pW = (avgVol / 255) * 100; var pH = (avgVol / 255) * 80;
               ctx.strokeStyle = '#00e676'; ctx.lineWidth = 4;
@@ -154,8 +164,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       document.getElementById('ip').value = data.multicastIP;
       document.getElementById('audioFloor').value = data.audioFloor;
       document.getElementById('audioGain').value = data.audioGain;
+      document.getElementById('peakGravity').value = data.peakGravity || 3;
+      document.getElementById('isDisplayOn').checked = (data.isDisplayOn !== false);
       document.getElementById('floorVal').innerText = data.audioFloor;
       document.getElementById('gainVal').innerText = (data.audioGain/10).toFixed(1);
+      document.getElementById('gravVal').innerText = data.peakGravity || 3;
       document.getElementById('effect').value = data.visualizerMode;
       document.getElementById('rotation').value = data.displayRotation;
       document.getElementById('webVer').innerText = "FIRMWARE RUNNING: " + data.version;
@@ -167,6 +180,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         multicastIP: document.getElementById('ip').value,
         audioFloor: parseInt(document.getElementById('audioFloor').value),
         audioGain: parseInt(document.getElementById('audioGain').value),
+        peakGravity: parseInt(document.getElementById('peakGravity').value),
+        isDisplayOn: document.getElementById('isDisplayOn').checked,
         visualizerMode: parseInt(document.getElementById('effect').value),
         displayRotation: parseInt(document.getElementById('rotation').value)
       };
