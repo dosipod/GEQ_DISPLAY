@@ -24,3 +24,18 @@ jobs:
 
       - name: Run PlatformIO Build
         run: pio run
+
+      - name: Copy Binaries to a Release Folder
+        run: |
+          mkdir -p build_output
+          # Find and copy the required binaries dynamically regardless of the specific environment name folder
+          find .pio/build/ -name "firmware.bin" -exec cp {} build_output/ \;
+          find .pio/build/ -name "bootloader.bin" -exec cp {} build_output/ \;
+          find .pio/build/ -name "partitions.bin" -exec cp {} build_output/ \;
+          ls -la build_output/
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-binaries
+          path: build_output/*.bin
