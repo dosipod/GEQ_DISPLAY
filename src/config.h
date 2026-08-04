@@ -9,9 +9,9 @@ extern Preferences preferences;
 struct DevConfig {
   uint16_t udpPort = 11980;
   char multicastIP[16] = "239.0.0.1";
-  uint8_t audioFloor = 5;
-  float audioGain = 1.0f;
-  uint8_t peakGravity = 3;
+  uint8_t audioFloor = 130;
+  float audioGain = 3.0f;
+  uint8_t peakGravity = 6;
   bool isDisplayOn = true;
   uint8_t visualizerMode = 0;
   uint8_t displayRotation = 3;
