@@ -43,8 +43,8 @@ Arduino_GFX *gfx = nullptr;
 #include "web_handlers.h"
 #include "effects.h"     
 
-const char* ssid     = "toi";
-const char* password = "dcba@4321";
+const char* ssid     = SECRET_SSID;
+const char* password = SECRET_PASS;
 
 void setup() {
   Serial.begin(115200); delay(500); loadSettingsFromFlash();
