@@ -21,8 +21,9 @@ TaskHandle_t networkTaskHandle = NULL;
 #undef GREEN
 #endif
 
-const char* ssid     = "toi";
-const char* password = "dcba@4321";
+
+const char* ssid     = SECRET_SSID;
+const char* password = SECRET_PASS;
 DevConfig config;
 
 WiFiUDP udp;
