@@ -25,17 +25,35 @@ jobs:
       - name: Run PlatformIO Build
         run: pio run
 
-      - name: Copy Binaries to a Release Folder
+      - name: Prepare Binaries and Artifact Name
+        id: build_meta
         run: |
           mkdir -p build_output
-          # Find and copy the required binaries dynamically regardless of the specific environment name folder
+          
+          # Copy binaries
           find .pio/build/ -name "firmware.bin" -exec cp {} build_output/ \;
           find .pio/build/ -name "bootloader.bin" -exec cp {} build_output/ \;
           find .pio/build/ -name "partitions.bin" -exec cp {} build_output/ \;
-          ls -la build_output/
+
+          # Dynamically get repository name and active environment name
+          REPO_NAME="${{ github.event.repository.name }}"
+          
+          # Automatically detects the PlatformIO environment folder name inside .pio/build/
+          ENV_NAME=$(ls .pio/build/ | head -n 1)
+
+          # Get date components (Month, Day, Year)
+          MONTH=$(date +'%B')
+          DAY=$(date +'%d')
+          YEAR=$(date +'%Y')
+
+          # Construct the custom artifact file name
+          ARTIFACT_NAME="${REPO_NAME}-${ENV_NAME}-${MONTH}-${DAY}-${YEAR}"
+          echo "artifact_name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+          
+          echo "Generated artifact name: ${ARTIFACT_NAME}"
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-binaries
+          name: ${{ steps.build_meta.outputs.artifact_name }}
           path: build_output/*.bin
